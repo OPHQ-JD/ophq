@@ -10,6 +10,6 @@
     "react": "latest",
     "react-dom": "latest"
     "pdfjs-dist": "^3.11.174",
-  },
+  }
   "devDependencies": {}
 }
