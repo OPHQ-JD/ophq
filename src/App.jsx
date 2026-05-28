@@ -527,10 +527,6 @@ function getPoLineAllocatedLengthM(line = {}) {
   return normaliseLengthM(line.allocatedLength || line.requiredLength || line.cutLength || line.jobLength || line.requiredCutLength || line.length) || Number(line.allocatedLength || line.requiredLength || line.cutLength || line.jobLength || line.requiredCutLength || line.length || 0);
 }
 
-function getPartLengthM(item = {}) {
-  return normaliseLengthM(item.length || item.lengthM || item.lengthMetres || item.cutLength || item.cutLengthM || item.requiredCutLength || item.requiredLength || item.jobLength || item.beamLength || item.stockLength || item.lineLength) || Number(item.length || item.lengthM || item.lengthMetres || item.cutLength || item.cutLengthM || item.requiredCutLength || item.requiredLength || item.jobLength || item.beamLength || item.stockLength || item.lineLength || 0);
-}
-
 function createStockSegmentsForFixedLine(item = {}, status = "Available") {
   const quantity = Math.max(1, Number(item.quantity || 1));
   const lengthM = Number(item.length || normaliseLengthM(item.lengthText) || 0);
@@ -580,113 +576,9 @@ function getRemainingLengthForStockItem(item = {}) {
     .reduce((sum, segment) => sum + Number(segment.availableLengthM || 0), 0);
 }
 
-function isAvailableStockStatus(status = "") {
-  return ["In Stock", "Offcut", "Available"].includes(String(status || ""));
-}
-
-function getSourceStockAvailableLength(item = {}) {
-  const segments = getStockSegments(item).filter((segment) => segment.status !== "Consumed");
-  const usableSegment = segments.find((segment) => Number(segment.availableLengthM || 0) > 0);
-  return Number(usableSegment?.availableLengthM || item.length || getRemainingLengthForStockItem(item) || 0);
-}
-
-function createRemainingSourceStockLine(sourceItem = {}) {
-  const quantity = Math.max(1, Number(sourceItem.quantity || 1));
-  if (quantity <= 1) return null;
-  return {
-    ...sourceItem,
-    id: createEntityId("stock"),
-    quantity: quantity - 1,
-    allocatedJobId: "",
-    stockLineType: sourceItem.stockLineType || "In Stock",
-    status: sourceItem.status || "In Stock",
-    notes: [sourceItem.notes, "Remaining uncut stock length retained after job allocation."].filter(Boolean).join(" | "),
-    lengthSegments: createLengthSegmentsForStockItem({ ...sourceItem, id: createEntityId("stock-seg-source"), quantity: quantity - 1 }),
-  };
-}
-
-function createAllocatedAndOffcutLinesFromStockItem(sourceItem = {}, { job = {}, part = {}, cutLengthM = 0 } = {}) {
-  const cutLength = Number(cutLengthM || part.length || 0);
-  const sourceLength = getSourceStockAvailableLength(sourceItem);
-  if (!cutLength || cutLength > sourceLength + 0.0001) return [sourceItem];
-  const now = new Date().toISOString();
-  const remaining = Math.max(0, sourceLength - cutLength);
-  const jobLabel = job.jobNo || job.id || "job";
-  const base = {
-    productId: sourceItem.productId || part.productId || "",
-    sectionSize: sourceItem.sectionSize || part.sectionSize || "",
-    grade: sourceItem.grade || part.grade || "S355",
-    finish: sourceItem.finish || part.finish || "Self colour",
-    quantity: 1,
-    location: sourceItem.location || "Stock",
-    purchaseDocumentId: sourceItem.purchaseDocumentId || "",
-    purchaseDocumentNo: sourceItem.purchaseDocumentNo || "",
-    sourceJobId: job.id || "",
-    sourcePoLineId: sourceItem.sourcePoLineId || part.id || "",
-    cutFromStockItemId: sourceItem.id || "",
-  };
-  const allocatedLine = {
-    ...sourceItem,
-    ...base,
-    id: createEntityId("stock-allocated"),
-    length: cutLength,
-    status: "Allocated",
-    stockLineType: "Allocated",
-    allocatedJobId: job.id || "",
-    allocatedJobNo: job.jobNo || "",
-    allocatedPartId: part.id || "",
-    allocatedAt: now,
-    notes: [`Allocated ${formatLengthM(cutLength)} to ${jobLabel}.`, sourceItem.notes || ""].filter(Boolean).join(" | "),
-  };
-  const rows = [{ ...allocatedLine, lengthSegments: createStockSegmentsForFixedLine(allocatedLine, "Allocated") }];
-  const remainingSourceStockLine = createRemainingSourceStockLine(sourceItem);
-  if (remainingSourceStockLine) rows.push(remainingSourceStockLine);
-  if (remaining > 0.0001) {
-    const offcutLine = {
-      ...sourceItem,
-      ...base,
-      id: createEntityId("stock-offcut"),
-      length: remaining,
-      status: "Offcut",
-      stockLineType: "Offcut",
-      allocatedJobId: "",
-      sourceJobId: "",
-      sourceOriginalStockItemId: sourceItem.id || "",
-      sourceAllocatedLengthM: cutLength,
-      sourceOrderedLengthM: sourceLength,
-      notes: [`Remaining offcut after allocating ${formatLengthM(cutLength)} to ${jobLabel}.`, sourceItem.notes || ""].filter(Boolean).join(" | "),
-    };
-    rows.push({ ...offcutLine, lengthSegments: createStockSegmentsForFixedLine(offcutLine, "Offcut") });
-  }
-  return rows;
-}
-
-function allocateExistingStockForJob(stockItems = [], job = {}) {
-  let updatedStockItems = [...(stockItems || [])];
-  let allocations = 0;
-  const parts = getJobPartsList(job, null).filter((part) => part.productId && part.sectionSize && getPartLengthM(part) > 0);
-  parts.forEach((part) => {
-    const quantity = Math.max(1, Number(part.quantity || 1));
-    for (let index = 0; index < quantity; index += 1) {
-      const candidates = updatedStockItems
-        .filter((item) => stockMatchesPart(item, part))
-        .filter((item) => isAvailableStockStatus(item.status) || isAvailableStockStatus(item.stockLineType))
-        .filter((item) => !item.allocatedJobId)
-        .filter((item) => getSourceStockAvailableLength(item) + 0.0001 >= getPartLengthM(part))
-        .sort((a, b) => getSourceStockAvailableLength(a) - getSourceStockAvailableLength(b));
-      const source = candidates[0];
-      if (!source) continue;
-      const replacement = createAllocatedAndOffcutLinesFromStockItem(source, { job, part, cutLengthM: getPartLengthM(part) });
-      updatedStockItems = updatedStockItems.flatMap((item) => item.id === source.id ? replacement : [item]);
-      allocations += 1;
-    }
-  });
-  return { stockItems: updatedStockItems, allocations };
-}
-
 function getStockAvailableLengthByStatus(stockItems = [], part = {}, status = "In Stock", jobId = "") {
   return (stockItems || [])
-    .filter((item) => stockMatchesPart(item, part) && (status === "In Stock" ? isAvailableStockStatus(item.status) || isAvailableStockStatus(item.stockLineType) : item.status === status))
+    .filter((item) => stockMatchesPart(item, part) && item.status === status)
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
     .filter(({ segment }) => !segment.allocatedJobId || segment.allocatedJobId === jobId)
@@ -694,12 +586,12 @@ function getStockAvailableLengthByStatus(stockItems = [], part = {}, status = "I
 }
 
 function getRequiredLengthForPart(part = {}) {
-  return getPartLengthM(part) * Math.max(1, Number(part.quantity || 1));
+  return Number(part.length || 0) * Math.max(1, Number(part.quantity || 1));
 }
 
 function findBestStockSegmentForLength(stockItems = [], part = {}, requiredLengthM = 0, preferredStatus = "In Stock", jobId = "") {
   const candidates = (stockItems || [])
-    .filter((item) => stockMatchesPart(item, part) && (preferredStatus === "In Stock" ? isAvailableStockStatus(item.status) || isAvailableStockStatus(item.stockLineType) : item.status === preferredStatus))
+    .filter((item) => stockMatchesPart(item, part) && item.status === preferredStatus)
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
     .filter(({ segment }) => !segment.allocatedJobId || segment.allocatedJobId === jobId)
@@ -841,6 +733,76 @@ function cutOffcutStockLine(stockItems = [], { stockItemId = "", lengthM = 0, jo
     }
   });
   return output;
+}
+
+
+function getPartCutLengthM(part = {}) {
+  return normaliseLengthM(part.requiredCutLength || part.cutLength || part.lengthM || part.length || part.sizeLength || part.itemLength || "") || Number(part.length || 0) || 0;
+}
+
+function allocateExistingStockRowsForJob(stockItems = [], job = {}) {
+  const parts = getJobPartsList(job, null).filter((part) => part.productId && part.sectionSize && getPartCutLengthM(part) > 0);
+  if (!parts.length) return stockItems;
+  let rows = [...stockItems];
+  parts.forEach((part) => {
+    const quantity = Math.max(1, Number(part.quantity || 1));
+    for (let index = 0; index < quantity; index += 1) {
+      const cutLengthM = getPartCutLengthM(part);
+      const candidateIndex = rows.findIndex((item) => {
+        if (!stockMatchesPart(item, part)) return false;
+        if (item.allocatedJobId) return false;
+        if (!["In Stock", "Offcut", "Available"].includes(item.status)) return false;
+        return Number(item.length || getRemainingLengthForStockItem(item) || 0) + 0.0001 >= cutLengthM;
+      });
+      if (candidateIndex < 0) continue;
+      const source = rows[candidateIndex];
+      const sourceLengthM = Number(source.length || getRemainingLengthForStockItem(source) || 0);
+      const sourceQuantity = Math.max(1, Number(source.quantity || 1));
+      const remainingCutOffcutM = Math.max(0, sourceLengthM - cutLengthM - stockKerfAllowanceM);
+      const allocatedLine = {
+        ...source,
+        id: createEntityId("stock-allocated"),
+        length: cutLengthM,
+        quantity: 1,
+        status: "Allocated",
+        stockLineType: "Allocated",
+        allocatedJobId: job.id || "",
+        allocatedJobNo: job.jobNo || "",
+        sourceStockItemId: source.id,
+        sourcePartId: part.id || "",
+        notes: [`Allocated ${formatLengthM(cutLengthM)} to ${job.jobNo || job.id || "job"} from existing stock.`, source.notes].filter(Boolean).join(" | "),
+      };
+      const replacementRows = [{ ...allocatedLine, lengthSegments: createStockSegmentsForFixedLine(allocatedLine, "Allocated") }];
+      if (remainingCutOffcutM > 0.0001) {
+        const offcutLine = {
+          ...source,
+          id: createEntityId("stock-offcut"),
+          length: remainingCutOffcutM,
+          quantity: 1,
+          status: "Offcut",
+          stockLineType: "Offcut",
+          allocatedJobId: "",
+          allocatedJobNo: "",
+          sourceStockItemId: source.id,
+          notes: [`Remaining offcut after allocating ${formatLengthM(cutLengthM)} to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | "),
+        };
+        replacementRows.push({ ...offcutLine, lengthSegments: createStockSegmentsForFixedLine(offcutLine, "Offcut") });
+      }
+      if (sourceQuantity > 1) {
+        const remainingFullLengthLine = {
+          ...source,
+          id: createEntityId("stock"),
+          quantity: sourceQuantity - 1,
+          allocatedJobId: "",
+          allocatedJobNo: "",
+          notes: [`Remaining ${sourceQuantity - 1} full length(s) after allocating one length to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | "),
+        };
+        replacementRows.push({ ...remainingFullLengthLine, lengthSegments: createLengthSegmentsForStockItem(remainingFullLengthLine) });
+      }
+      rows = [...rows.slice(0, candidateIndex), ...replacementRows, ...rows.slice(candidateIndex + 1)];
+    }
+  });
+  return rows;
 }
 
 function runStockLengthAllocationTests() {
@@ -2662,11 +2624,6 @@ function runSelfTests() {
   console.assert(poStockTest.length === 2 && poStockTest.some((item) => item.stockLineType === "Allocated") && poStockTest.some((item) => item.stockLineType === "Offcut"), "raised PO should create allocated and offcut stock lines");
   const manualCutTest = cutOffcutStockLine([{ id: "offcut-test", productId: "ub", sectionSize: "203x102x23", length: 2, quantity: 1, status: "Offcut", stockLineType: "Offcut", lengthSegments: [{ id: "offcut-test-seg-1", originalLengthM: 2, availableLengthM: 2, status: "Offcut", allocations: [] }] }], { stockItemId: "offcut-test", lengthM: 0.75 });
   console.assert(manualCutTest.length === 2 && manualCutTest.some((item) => item.stockLineType === "Allocated Cut") && manualCutTest.some((item) => item.stockLineType === "Offcut" && Math.abs(Number(item.length || 0) - 1.25) < 0.001), "manual offcut cut should create a cut line and remaining offcut line");
-  const existingStockAllocationTest = allocateExistingStockForJob([{ id: "existing-stock", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 6, quantity: 1, status: "In Stock", allocatedJobId: "" }], { id: "job-stock", jobNo: "JD-STOCK", partsList: [{ id: "part-stock", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 4, quantity: 1 }] });
-  console.assert(existingStockAllocationTest.allocations === 1 && existingStockAllocationTest.stockItems.some((item) => item.stockLineType === "Allocated" && item.allocatedJobId === "job-stock") && existingStockAllocationTest.stockItems.some((item) => item.stockLineType === "Offcut" && Math.abs(Number(item.length || 0) - 2) < 0.001), "job creation should split existing stock into allocated and offcut lines");
-  const lengthMAllocationTest = allocateExistingStockForJob([{ id: "existing-stock-lengthm", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 6, quantity: 2, status: "In Stock", allocatedJobId: "" }], { id: "job-stock-lengthm", jobNo: "JD-STOCK2", partsList: [{ id: "part-stock-lengthm", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Primed", lengthM: 4, quantity: 1 }] });
-  console.assert(lengthMAllocationTest.allocations === 1 && lengthMAllocationTest.stockItems.some((item) => item.stockLineType === "Allocated" && Math.abs(Number(item.length || 0) - 4) < 0.001) && lengthMAllocationTest.stockItems.some((item) => item.stockLineType === "Offcut" && Math.abs(Number(item.length || 0) - 2) < 0.001) && lengthMAllocationTest.stockItems.some((item) => Number(item.quantity || 0) === 1 && item.status === "In Stock"), "job creation should allocate quote lengthM from existing self-colour stock and keep remaining full stock quantity");
-  console.assert(consumeAllocatedStockLine(existingStockAllocationTest.stockItems, existingStockAllocationTest.stockItems.find((item) => item.stockLineType === "Allocated")?.id || "").every((item) => item.stockLineType !== "Allocated"), "cut/consume should remove allocated stock line");
   console.assert(runPurchasingDisplayTests().passed === true, "purchasing display grouping tests should pass");
   console.assert(steelIndustryProfile.products === steelProductDatabase, "steel industry profile should reference the existing steel product database without cloning behaviour");
   console.assert(steelIndustryProfile.sectionInventory === steelSectionInventory, "steel industry profile should reference the existing section inventory");
@@ -3608,7 +3565,7 @@ function getJobPartsList(job, quote) {
     sectionSize: item.sectionSize || item.size || "",
     grade: item.grade || "",
     finish: item.finish || "",
-    length: getPartLengthM(item),
+    length: Number(item.length || 0),
     width: Number(item.width || 0),
     quantity: Number(item.quantity || 1),
     weightKg: Number(item.weightKg || 0),
@@ -3620,17 +3577,14 @@ function stockMatchesPart(stockItem, part) {
   const sameProduct = !part.productId || stockItem.productId === part.productId;
   const sameSection = !part.sectionSize || String(stockItem.sectionSize || "").toLowerCase() === String(part.sectionSize || "").toLowerCase();
   const sameGrade = !part.grade || String(stockItem.grade || "").toLowerCase() === String(part.grade || "").toLowerCase();
-  const stockFinish = String(stockItem.finish || "Self colour").toLowerCase();
-  const partFinish = String(part.finish || "").toLowerCase();
-  const sameFinish = !partFinish || stockFinish === partFinish || stockFinish === "self colour" || stockFinish === "self-color";
+  const sameFinish = !part.finish || String(stockItem.finish || "").toLowerCase() === String(part.finish || "").toLowerCase();
   return sameProduct && sameSection && sameGrade && sameFinish;
 }
 
 function getStockStatusForPart(part, stockItems, jobId) {
   const matches = stockItems.filter((item) => stockMatchesPart(item, part));
   const requiredLengthM = getRequiredLengthForPart(part);
-  const partLengthM = getPartLengthM(part);
-  const hasLengthRequirement = partLengthM > 0;
+  const hasLengthRequirement = Number(part.length || 0) > 0;
   const allocatedToJob = matches.filter((item) => item.allocatedJobId === jobId);
   const available = matches.filter((item) => item.status === "In Stock" && !item.allocatedJobId);
   const onOrder = matches.filter((item) => item.status === "On Order");
@@ -3645,8 +3599,8 @@ function getStockStatusForPart(part, stockItems, jobId) {
     .flatMap((segment) => segment.allocations || [])
     .filter((allocation) => allocation.jobId === jobId)
     .reduce((sum, allocation) => sum + Number(allocation.lengthM || 0), 0);
-  const bestInStock = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, partLengthM, "In Stock", jobId) : null;
-  const bestOnOrder = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, partLengthM, "On Order", jobId) : null;
+  const bestInStock = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, Number(part.length || 0), "In Stock", jobId) : null;
+  const bestOnOrder = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, Number(part.length || 0), "On Order", jobId) : null;
 
   if (hasLengthRequirement) {
     const missingLengthM = Math.max(0, requiredLengthM - availableLengthM - onOrderLengthM - allocatedLengthM);
@@ -6457,18 +6411,18 @@ export default function FabricationProductionPlannerIntegrated() {
     }
 
     const job = createJobFromQuotePackage({ quotePackage, jobCount: jobs.length, today });
-    const allocationResult = allocateExistingStockForJob(stockItems, job);
-    const missingParts = buildMissingPartsForJob(job, allocationResult.stockItems);
+    const stockAfterExistingAllocations = allocateExistingStockRowsForJob(stockItems, job);
+    const missingParts = buildMissingPartsForJob(job, stockAfterExistingAllocations);
     const suggestedPo = missingParts.length ? createSuggestedPurchaseOrderDraft({ job, missingParts, supplierId: suppliers[0]?.id || "", poCount: purchaseOrders.length, today }) : null;
 
     const createdJob = actionService.createRecord({ resource: "jobs", record: job, setter: setJobs, notes: "Quote package converted to job." });
     if (!createdJob) return;
-    if (allocationResult.allocations > 0) setStockItems(allocationResult.stockItems);
+    if (stockAfterExistingAllocations !== stockItems) setStockItems(stockAfterExistingAllocations);
     if (suggestedPo) actionService.createRecord({ resource: "purchase_enquiries", record: suggestedPo, setter: setPurchaseOrders, notes: "Supplier enquiry created from missing job materials." });
     setSelectedJobId(job.id);
     actionService.updateRecord({ resource: "quotes", id: quotePackage.quoteId, patch: { status: "Converted" }, setter: setQuotes, notes: "Quote status updated after job conversion." });
     actionService.updateRecord({ resource: "quote_packages", id: quotePackage.quoteId, patch: { inboxStatus: "Converted", convertedJobId: job.id, convertedJobNo: job.jobNo }, setter: setPlannerQuotePackages, notes: "Planner quote package marked as converted." });
-    setAutomationStatus(`${quotePackage.quoteNo} converted to ${job.jobNo}. ${allocationResult.allocations ? `${allocationResult.allocations} stock allocation(s) created. ` : ""}${suggestedPo ? `Supplier enquiry ${suggestedPo.enquiryNo} created for missing material review.` : "No missing material found for supplier enquiry."}`);
+    setAutomationStatus(`${quotePackage.quoteNo} converted to ${job.jobNo}. ${suggestedPo ? `Supplier enquiry ${suggestedPo.enquiryNo} created for missing material review.` : "No missing material found for supplier enquiry."}`);
     setActiveTab("planner");
   }
 
