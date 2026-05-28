@@ -346,6 +346,7 @@ function getEmptyAppStateSnapshot() {
     companySettings: initialCompanySettings,
     clockEntries: [],
     holidays: [],
+    sickDays: [],
     stageTimeEntries: [],
     pricingSchedule: defaultSteelPricingSchedule,
     productivityRules: defaultProductivityRules,
@@ -444,13 +445,17 @@ const initialStaff = [
   { id: "s4", name: "Lee", roles: ["Order Materials", "Delivery"], rolePriorities: { "Order Materials": 4, Delivery: 1 }, hoursPerDay: 8, pin: "4444" },
 ];
 
+function isStaffActive(person = {}) {
+  return String(person.status || "Active") !== "Inactive";
+}
+
 const stages = ["Design", "Order Materials", "Cutting", "Drilling", "Fabrication", "Welding", "Inspection", "Painting", "Delivery", "Complete"];
 const statuses = ["Waiting Material", "In Production", "To Be Invoiced", "Delivery", "Complete"];
 const quoteStatuses = ["Draft", "In Planner Review", "Ready to send", "Sent", "Accepted", "Rejected", "Converted"];
 const poStatuses = ["Enquiry Draft", "Enquiry Sent", "Supplier Quote Received", "Draft PO", "Sent", "Part Received", "Received", "Cancelled"];
 const deliveryStatuses = ["Draft", "Issued", "Signed", "Cancelled"];
 const invoiceStatuses = ["Not Invoiced", "Ready for Xero", "Sent to Xero", "Paid"];
-const stockStatuses = ["In Stock", "On Order"];
+const stockStatuses = ["In Stock", "On Order", "Allocated", "Offcut", "Consumed", "Scrapped"];
 const stockLengthStatuses = ["Available", "Reserved", "Consumed", "Offcut"];
 const stockKerfAllowanceM = 0;
 
@@ -512,6 +517,28 @@ function getStockAllocationRows(item = {}, jobs = []) {
 
 function getStockTraceabilityNumber(item = {}) {
   return item.purchaseDocumentNo || item.poNo || item.enquiryNo || item.purchaseDocumentId || "Manual stock";
+}
+
+function getPoLineOrderedLengthM(line = {}) {
+  return normaliseLengthM(line.orderedLength || line.orderLength || line.stockLength || line.length) || Number(line.orderedLength || line.orderLength || line.stockLength || line.length || 0);
+}
+
+function getPoLineAllocatedLengthM(line = {}) {
+  return normaliseLengthM(line.allocatedLength || line.requiredLength || line.cutLength || line.jobLength || line.requiredCutLength || line.length) || Number(line.allocatedLength || line.requiredLength || line.cutLength || line.jobLength || line.requiredCutLength || line.length || 0);
+}
+
+function createStockSegmentsForFixedLine(item = {}, status = "Available") {
+  const quantity = Math.max(1, Number(item.quantity || 1));
+  const lengthM = Number(item.length || normaliseLengthM(item.lengthText) || 0);
+  return Array.from({ length: quantity }, (_, index) => ({
+    id: `${item.id || "stock"}-seg-${index + 1}`,
+    originalLengthM: lengthM,
+    availableLengthM: lengthM,
+    status,
+    sourceStatus: item.status || "In Stock",
+    allocatedJobId: item.allocatedJobId || "",
+    allocations: item.allocatedJobId ? [{ id: createEntityId("stock-allocation"), jobId: item.allocatedJobId, lengthM, partId: item.sourcePoLineId || "", status: "Allocated", allocatedAt: new Date().toISOString() }] : [],
+  }));
 }
 
 function scrapStockSegment(stockItems = [], { stockItemId = "", segmentId = "", reason = "Scrapped offcut" }) {
@@ -600,30 +627,112 @@ function allocateStockLengthToJob(stockItems = [], { stockItemId = "", segmentId
   });
 }
 
-function createStockItemFromPoLine(line = {}, po = {}, status = "On Order") {
-  const lengthM = normaliseLengthM(line.length) || Number(line.length || 0);
+function createStockLinesFromPoLine(line = {}, po = {}, status = "On Order") {
+  const orderedLengthM = getPoLineOrderedLengthM(line);
+  const allocatedLengthM = Math.min(orderedLengthM, getPoLineAllocatedLengthM(line) || orderedLengthM);
+  const offcutLengthM = Math.max(0, orderedLengthM - allocatedLengthM);
   const quantity = Math.max(1, Number(line.quantity || 1));
-  const base = {
-    id: createEntityId("stock"),
+  const common = {
     productId: line.productId || "",
     sectionSize: line.sectionSize || "",
-    grade: line.grade || "",
+    grade: line.grade || "S355",
     finish: line.finish || "Self colour",
-    length: lengthM,
     quantity,
-    location: status === "On Order" ? "On order" : "",
-    status,
-    allocatedJobId: "",
+    location: status === "On Order" ? "On order" : "Goods in",
     purchaseDocumentId: po.id || "",
     purchaseDocumentNo: getPurchasingDocumentNumber(po),
     sourceJobId: po.jobId || "",
-    notes: `Created from ${getPurchasingDocumentTitle(po)} ${getPurchasingDocumentNumber(po)}.`,
+    sourcePoLineId: line.id || "",
   };
-  return { ...base, lengthSegments: createLengthSegmentsForStockItem(base) };
+  const rows = [];
+  if (allocatedLengthM > 0) {
+    const allocated = {
+      ...common,
+      id: createEntityId("stock-allocated"),
+      length: allocatedLengthM,
+      status: status === "On Order" ? "On Order" : "Allocated",
+      stockLineType: "Allocated",
+      allocatedJobId: po.jobId || "",
+      notes: `Allocated cut from ${getPurchasingDocumentTitle(po)} ${getPurchasingDocumentNumber(po)}. Cut ${formatLengthM(allocatedLengthM)} from ordered ${formatLengthM(orderedLengthM)}.`,
+    };
+    rows.push({ ...allocated, lengthSegments: createStockSegmentsForFixedLine(allocated, "Allocated") });
+  }
+  if (offcutLengthM > 0) {
+    const offcut = {
+      ...common,
+      id: createEntityId("stock-offcut"),
+      length: offcutLengthM,
+      status: status === "On Order" ? "On Order" : "Offcut",
+      stockLineType: "Offcut",
+      allocatedJobId: "",
+      sourceOrderedLengthM: orderedLengthM,
+      sourceAllocatedLengthM: allocatedLengthM,
+      notes: `Offcut created from ${getPurchasingDocumentTitle(po)} ${getPurchasingDocumentNumber(po)} after allocated cut ${formatLengthM(allocatedLengthM)}.`,
+    };
+    rows.push({ ...offcut, lengthSegments: createStockSegmentsForFixedLine(offcut, "Offcut") });
+  }
+  return rows;
+}
+
+function createStockItemFromPoLine(line = {}, po = {}, status = "On Order") {
+  return createStockLinesFromPoLine(line, po, status)[0] || null;
 }
 
 function createStockItemsFromPurchasingDocument(po = {}, status = "On Order") {
-  return (po.items || []).filter((line) => line.productId && line.sectionSize && Number(normaliseLengthM(line.length) || line.length || 0) > 0).map((line) => createStockItemFromPoLine(line, po, status));
+  if (isEnquiryDocument(po)) return [];
+  return (po.items || [])
+    .filter((line) => line.productId && line.sectionSize && getPoLineOrderedLengthM(line) > 0)
+    .flatMap((line) => createStockLinesFromPoLine(line, po, status));
+}
+
+function consumeAllocatedStockLine(stockItems = [], stockItemId = "") {
+  if (!stockItemId) return stockItems;
+  return stockItems.filter((item) => item.id !== stockItemId);
+}
+
+function cutOffcutStockLine(stockItems = [], { stockItemId = "", lengthM = 0, jobId = "" }) {
+  const cutLength = Number(lengthM || 0);
+  if (!stockItemId || cutLength <= 0) return stockItems;
+  const now = new Date().toISOString();
+  const output = [];
+  stockItems.forEach((item) => {
+    if (item.id !== stockItemId) {
+      output.push(item);
+      return;
+    }
+    const sourceLength = Number(item.length || getRemainingLengthForStockItem(item) || 0);
+    if (cutLength > sourceLength + 0.0001) {
+      output.push(item);
+      return;
+    }
+    const remaining = Math.max(0, sourceLength - cutLength);
+    const cutLine = {
+      ...item,
+      id: createEntityId("stock-cut"),
+      length: cutLength,
+      quantity: 1,
+      status: "Allocated",
+      stockLineType: "Allocated Cut",
+      allocatedJobId: jobId || item.allocatedJobId || "",
+      cutFromStockItemId: item.id,
+      notes: [`Manual cut ${formatLengthM(cutLength)} from offcut ${item.id}.`, jobId ? `Allocated to job ${jobId}.` : "Manual cut not job-linked."].join(" "),
+    };
+    output.push({ ...cutLine, lengthSegments: createStockSegmentsForFixedLine(cutLine, "Allocated") });
+    if (remaining > 0.0001) {
+      const offcutLine = {
+        ...item,
+        id: createEntityId("stock-offcut"),
+        length: remaining,
+        quantity: 1,
+        status: item.status === "On Order" ? "On Order" : "Offcut",
+        stockLineType: "Offcut",
+        allocatedJobId: "",
+        notes: [item.notes, `Remaining offcut after manual cut ${formatLengthM(cutLength)} on ${now}.`].filter(Boolean).join(" | "),
+      };
+      output.push({ ...offcutLine, lengthSegments: createStockSegmentsForFixedLine(offcutLine, "Offcut") });
+    }
+  });
+  return output;
 }
 
 function runStockLengthAllocationTests() {
@@ -668,6 +777,14 @@ const quotePriorityOptions = [
 
 const plannerQuoteStatuses = ["Awaiting lead time review", "Ready to send to customer", "Sent to customer", "Accepted", "Rejected", "Converted"];
 
+const finishPricingRows = [
+  { productId: "finish-self-colour", finish: "Self colour", buyPrice: 0, markupAmount: 0, unitLabel: "£/tonne" },
+  { productId: "finish-primed", finish: "Primed", buyPrice: 0, markupAmount: 0, unitLabel: "£/tonne" },
+  { productId: "finish-painted", finish: "Painted", buyPrice: 0, markupAmount: 0, unitLabel: "£/tonne" },
+  { productId: "finish-galvanised", finish: "Galvanised", buyPrice: 0, markupAmount: 0, unitLabel: "£/tonne" },
+  { productId: "finish-powder-coated", finish: "Powder coated", buyPrice: 0, markupAmount: 0, unitLabel: "£/tonne" },
+];
+
 const defaultSteelPricingSchedule = [
   { productId: "ub", buyPrice: 1000, markupAmount: 0 },
   { productId: "uc", buyPrice: 1000, markupAmount: 0 },
@@ -679,7 +796,7 @@ const defaultSteelPricingSchedule = [
   { productId: "chs", buyPrice: 1000, markupAmount: 0 },
   { productId: "flat", buyPrice: 1000, markupAmount: 0 },
   { productId: "plate", buyPrice: 1000, markupAmount: 0 },
-  { productId: "finish", buyPrice: 0, markupAmount: 0 },
+  ...finishPricingRows,
   { productId: "web-holes", buyPrice: 3.5, markupAmount: 0 },
   { productId: "flange-holes", buyPrice: 3.5, markupAmount: 0 },
   { productId: "stiffeners", buyPrice: 15, markupAmount: 0 },
@@ -1089,7 +1206,33 @@ function createCustomProductRecord({ name, category = "Custom Products", unit = 
   };
 }
 
+function getFinishPricingId(finish = "Self colour") {
+  const clean = String(finish || "Self colour").trim().toLowerCase();
+  if (clean === "primed") return "finish-primed";
+  if (clean === "painted") return "finish-painted";
+  if (clean === "galvanised" || clean === "galvanized") return "finish-galvanised";
+  if (clean === "powder coated" || clean === "powder-coated") return "finish-powder-coated";
+  return "finish-self-colour";
+}
+
+function getFinishNameFromPricingId(productId = "") {
+  return finishPricingRows.find((row) => row.productId === productId)?.finish || "";
+}
+
+function normaliseSteelPricingSchedule(savedSchedule = []) {
+  const saved = Array.isArray(savedSchedule) ? savedSchedule : [];
+  const savedWithoutLegacyFinish = saved.filter((row) => row.productId !== "finish");
+  const mergedDefaults = defaultSteelPricingSchedule.map((defaultRow) => {
+    const savedRow = savedWithoutLegacyFinish.find((row) => row.productId === defaultRow.productId && String(row.sectionSize || "") === String(defaultRow.sectionSize || ""));
+    return savedRow ? { ...defaultRow, ...savedRow } : defaultRow;
+  });
+  const extraRows = savedWithoutLegacyFinish.filter((row) => !mergedDefaults.some((defaultRow) => defaultRow.productId === row.productId && String(defaultRow.sectionSize || "") === String(row.sectionSize || "")));
+  return [...mergedDefaults, ...extraRows];
+}
+
 function getProductName(productId, productDatabase = steelProductDatabase) {
+  const finishName = getFinishNameFromPricingId(productId);
+  if (finishName) return `${finishName} finish`;
   return (productDatabase || steelProductDatabase).find((product) => product.id === productId)?.name || productId;
 }
 
@@ -1163,6 +1306,8 @@ function calculateSteelTakeoffLineTotal(line, pricingSchedule) {
   const productSell = calculateSellPriceFromRow(productPricingRow);
   const weightT = estimateSteelLineWeightKg(line) / 1000;
   const materialTotal = productPricingRow.priceMode === "fixed" ? productSell * Number(line.quantity || 1) : weightT * productSell;
+  const finishPricingRow = getPricingRow(pricingSchedule, getFinishPricingId(line.finish));
+  const finishTotal = weightT * calculateSellPriceFromRow(finishPricingRow);
   const webHoleCount = normaliseTakeoffOptionCount(line.webHolesRequired, line.webHoles, line.length, line.webHoleCentres);
   const flangeHoleCount = normaliseTakeoffOptionCount(line.flangeHolesRequired, line.flangeHoles, line.length, line.flangeHoleCentres);
   const stiffenerCount = normaliseTakeoffOptionCount(line.stiffenersRequired, line.stiffeners, line.length, line.stiffenerCentres);
@@ -1180,7 +1325,7 @@ function calculateSteelTakeoffLineTotal(line, pricingSchedule) {
   const basePlateMaterialTotal = basePlateWeightT * flatPlateSell;
   const basePlateFabricationTotal = line.basePlateRequired === "Yes" ? Number(line.basePlateQuantity || 1) * calculateSellPriceFromRow(getPricingRow(pricingSchedule, "base-plate-fabrication")) : 0;
   const spliceTotal = line.splicedRequired === "Yes" ? Number(line.spliceQuantity || 0) * Number(line.spliceCostEach || 0) : 0;
-  return materialTotal + webHoleTotal + flangeHoleTotal + stiffenerTotal + connectionTotal + topPlateTotal + bottomPlateTotal + basePlateMaterialTotal + basePlateFabricationTotal + spliceTotal;
+  return materialTotal + finishTotal + webHoleTotal + flangeHoleTotal + stiffenerTotal + connectionTotal + topPlateTotal + bottomPlateTotal + basePlateMaterialTotal + basePlateFabricationTotal + spliceTotal;
 }
 
 function normaliseProductivityRules(savedRules = []) {
@@ -1424,11 +1569,15 @@ function buildSteelLineFromNoPriceImportRow(row, index = 0) {
     topPlateWidth: "300",
     topPlateLength: "",
     topPlateQuantity: 1,
+    topPlateWeldHitMm: "",
+    topPlateWeldMissMm: "",
     bottomPlateRequired: "No",
     bottomPlateThickness: "8",
     bottomPlateWidth: "300",
     bottomPlateLength: "",
     bottomPlateQuantity: 1,
+    bottomPlateWeldHitMm: "",
+    bottomPlateWeldMissMm: "",
     basePlateRequired: row.basePlateRequired || "No",
     basePlateQuantity: Number(row.basePlateQuantity || 1),
     basePlateThickness: "10",
@@ -1450,12 +1599,16 @@ function buildSteelQuoteItem(line, pricingSchedule, productDatabase = steelProdu
   const flangeHoleCount = normaliseTakeoffOptionCount(line.flangeHolesRequired, line.flangeHoles, line.length, line.flangeHoleCentres);
   const stiffenerCount = normaliseTakeoffOptionCount(line.stiffenersRequired, line.stiffeners, line.length, line.stiffenerCentres);
   const details = [];
+  if (line.finish && line.finish !== "Self colour") {
+    const finishRate = calculateSellPriceFromRow(getPricingRow(pricingSchedule, getFinishPricingId(line.finish)));
+    details.push(`${line.finish} finish @ ${currency(finishRate)}/tonne = ${currency((weightKg / 1000) * finishRate)}`);
+  }
   if (line.webHolesRequired === "Yes") details.push(`Web holes ${line.webHoleSize || ""} x${webHoleCount} @ ${line.webHoleCentres || 0}mm centres, ${calculateDistanceFromEnd(line.length, webHoleCount, line.webHoleCentres).toFixed(0)}mm from end`);
   if (line.flangeHolesRequired === "Yes") details.push(`Flange holes ${line.flangeHoleSize || ""} x${flangeHoleCount} @ ${line.flangeHoleCentres || 0}mm centres, ${calculateDistanceFromEnd(line.length, flangeHoleCount, line.flangeHoleCentres).toFixed(0)}mm from end`);
   if (line.stiffenersRequired === "Yes") details.push(`Stiffeners x${stiffenerCount} @ ${line.stiffenerCentres || 0}mm centres, ${calculateDistanceFromEnd(line.length, stiffenerCount, line.stiffenerCentres).toFixed(0)}mm from end`);
   if (line.connectionRequired === "Yes") details.push(`${line.connectionType} x${line.connectionQuantity || 1}`);
-  if (line.topPlateRequired === "Yes") details.push(`Top plate ${line.topPlateThickness || 0}mm x ${line.topPlateWidth || 0}mm x ${line.topPlateLength || line.length || 0}m x${line.topPlateQuantity || 1}`);
-  if (line.bottomPlateRequired === "Yes") details.push(`Bottom plate ${line.bottomPlateThickness || 0}mm x ${line.bottomPlateWidth || 0}mm x ${line.bottomPlateLength || line.length || 0}m x${line.bottomPlateQuantity || 1}`);
+  if (line.topPlateRequired === "Yes") details.push(`Top plate ${line.topPlateThickness || 0}mm x ${line.topPlateWidth || 0}mm x ${line.topPlateLength || line.length || 0}m x${line.topPlateQuantity || 1}${line.topPlateWeldHitMm || line.topPlateWeldMissMm ? ` · Weld hit ${line.topPlateWeldHitMm || 0}mm / miss ${line.topPlateWeldMissMm || 0}mm` : ""}`);
+  if (line.bottomPlateRequired === "Yes") details.push(`Bottom plate ${line.bottomPlateThickness || 0}mm x ${line.bottomPlateWidth || 0}mm x ${line.bottomPlateLength || line.length || 0}m x${line.bottomPlateQuantity || 1}${line.bottomPlateWeldHitMm || line.bottomPlateWeldMissMm ? ` · Weld hit ${line.bottomPlateWeldHitMm || 0}mm / miss ${line.bottomPlateWeldMissMm || 0}mm` : ""}`);
   if (line.basePlateRequired === "Yes") details.push(`Base plates ${line.basePlateThickness || 0}mm x ${line.basePlateWidth || 0}mm x ${line.basePlateLength || 0}mm x${line.basePlateQuantity || 1}`);
   if (line.splicedRequired === "Yes") details.push(`Splices x${line.spliceQuantity || 0}`);
   return {
@@ -1557,6 +1710,7 @@ function createPoLineFromPart(part = {}, index = 0, quantity = 1, customProducts
   const sectionSize = part.sectionSize || sectionOptions[0] || "";
   const finish = part.finish || "Self colour";
   const length = part.length ? String(part.length) : "";
+  const requiredCutLength = part.requiredCutLength || part.length || "";
   const qty = Math.max(1, Number(quantity || part.quantity || 1));
   const unitCost = Number(part.unitCost || part.price || 0);
   return {
@@ -1564,6 +1718,7 @@ function createPoLineFromPart(part = {}, index = 0, quantity = 1, customProducts
     productId,
     sectionSize,
     length,
+    requiredCutLength,
     quantity: qty,
     finish,
     unitCost,
@@ -1714,11 +1869,15 @@ function createPlannerStressTestLine(jobIndex, lineIndex) {
     topPlateWidth: "300",
     topPlateLength: lineIndex === 1 ? template.length : "",
     topPlateQuantity: lineIndex === 1 ? 1 : 0,
+    topPlateWeldHitMm: "",
+    topPlateWeldMissMm: "",
     bottomPlateRequired: lineIndex === 2 ? "Yes" : "No",
     bottomPlateThickness: "8",
     bottomPlateWidth: "300",
     bottomPlateLength: lineIndex === 2 ? template.length : "",
     bottomPlateQuantity: lineIndex === 2 ? 1 : 0,
+    bottomPlateWeldHitMm: "",
+    bottomPlateWeldMissMm: "",
     spliceQuantity: lineIndex === 0 && jobIndex % 3 === 0 ? 1 : 0,
     splicedRequired: lineIndex === 0 && jobIndex % 3 === 0 ? "Yes" : "No",
     spliceCostEach: 45,
@@ -1911,11 +2070,11 @@ function normaliseStaffRolePriorities(person = {}) {
 
 function getEligibleStaffForJob(job = {}, allStaff = []) {
   const excluded = new Set(job.excludedStaffIds || []);
-  return (allStaff || []).filter((person) => !excluded.has(person.id));
+  return (allStaff || []).filter((person) => isStaffActive(person) && !excluded.has(person.id));
 }
 
 function getQualifiedStaffForStage(stage, allStaff = []) {
-  return (allStaff || []).filter((person) => (person.roles || []).includes(stage));
+  return (allStaff || []).filter((person) => isStaffActive(person) && (person.roles || []).includes(stage));
 }
 
 function getTaskLoadByStaff(jobs = [], activeOnly = false) {
@@ -2389,6 +2548,12 @@ function runSelfTests() {
   console.assert(getStockStatusForPart(testParts[0], testStock, testJob.id).label === "Available", "matching stock should show Available");
   console.assert(getStockStatusForPart({ ...testParts[0], quantity: 3 }, testStock, testJob.id).label === "Missing", "insufficient stock quantity should show Missing");
   console.assert(runStockLengthAllocationTests().passed === true, "stock length allocation tests should pass");
+  const enquiryStockTest = createStockItemsFromPurchasingDocument({ id: "enq-test", enquiryNo: "ENQ-00001", documentKind: "Enquiry", status: "Enquiry Sent", items: [{ id: "l1", productId: "ub", sectionSize: "203x102x23", length: 6, requiredCutLength: 4, quantity: 1 }] }, "On Order");
+  console.assert(enquiryStockTest.length === 0, "enquiries should not create stock inventory lines");
+  const poStockTest = createStockItemsFromPurchasingDocument({ id: "po-test", poNo: "PO-00001", documentKind: "Purchase Order", status: "Draft PO", jobId: "job-a", items: [{ id: "l1", productId: "ub", sectionSize: "203x102x23", length: 6, requiredCutLength: 4, quantity: 1 }] }, "On Order");
+  console.assert(poStockTest.length === 2 && poStockTest.some((item) => item.stockLineType === "Allocated") && poStockTest.some((item) => item.stockLineType === "Offcut"), "raised PO should create allocated and offcut stock lines");
+  const manualCutTest = cutOffcutStockLine([{ id: "offcut-test", productId: "ub", sectionSize: "203x102x23", length: 2, quantity: 1, status: "Offcut", stockLineType: "Offcut", lengthSegments: [{ id: "offcut-test-seg-1", originalLengthM: 2, availableLengthM: 2, status: "Offcut", allocations: [] }] }], { stockItemId: "offcut-test", lengthM: 0.75 });
+  console.assert(manualCutTest.length === 2 && manualCutTest.some((item) => item.stockLineType === "Allocated Cut") && manualCutTest.some((item) => item.stockLineType === "Offcut" && Math.abs(Number(item.length || 0) - 1.25) < 0.001), "manual offcut cut should create a cut line and remaining offcut line");
   console.assert(runPurchasingDisplayTests().passed === true, "purchasing display grouping tests should pass");
   console.assert(steelIndustryProfile.products === steelProductDatabase, "steel industry profile should reference the existing steel product database without cloning behaviour");
   console.assert(steelIndustryProfile.sectionInventory === steelSectionInventory, "steel industry profile should reference the existing section inventory");
@@ -2396,6 +2561,7 @@ function runSelfTests() {
   console.assert(steelIndustryProfile.productivityRules === defaultProductivityRules, "steel industry profile should reference the existing productivity rules");
   console.assert(steelIndustryProfile.stages === stages, "steel industry profile should reference the existing planner stages");
   console.assert(calculateSteelTakeoffLineTotal({ productId: "ub", sectionSize: "203x102x23", length: 6, quantity: 1 }, steelIndustryProfile.pricingSchedule) === calculateSteelTakeoffLineTotal({ productId: "ub", sectionSize: "203x102x23", length: 6, quantity: 1 }, defaultSteelPricingSchedule), "steel profile pricing reference should not change quote totals");
+  console.assert(calculateSteelTakeoffLineTotal({ productId: "ub", sectionSize: "203x102x23", finish: "Primed", length: 200 / 23, quantity: 1 }, [{ productId: "ub", buyPrice: 0, markupAmount: 0 }, { productId: "finish-primed", buyPrice: 100, markupAmount: 0 }]) === 20, "200kg primed at £100/t should add £20 finish cost");
   console.assert(estimateSteelLineWeightKg({ productId: "ub", sectionSize: "203x102x23", length: 6, quantity: 1 }) === 138, "steel profile scaffold should not change steel weight calculation");
   const backupSummary = getBackupPreviewSummary({ customers: [{ id: "c" }], quotes: [{ id: "q" }], jobs: [{ id: "j" }], purchaseOrders: [{ id: "po" }], stockItems: [{ id: "s" }], exportedAt: "2026-05-24" });
   console.assert(backupSummary.customers === 1 && backupSummary.jobs === 1 && backupSummary.stockItems === 1, "backup preview summary should count key OPHQ records before restore");
@@ -2920,7 +3086,7 @@ function DeliveryCalendar({ jobs, deliveryNotes, customers, onCreateDeliveryNote
   );
 }
 
-function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
+function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClockIn, onClockOut, onAddSickDay, onDeleteSickDay }) {
   const today = toIso(new Date());
   const [staffPins, setStaffPins] = useState({});
   const [staffPinErrors, setStaffPinErrors] = useState({});
@@ -2944,6 +3110,8 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
   const [timesheetUnlocked, setTimesheetUnlocked] = useState(false);
   const [timesheetPin, setTimesheetPin] = useState("");
   const [timesheetPinError, setTimesheetPinError] = useState("");
+  const [sickDayForm, setSickDayForm] = useState({ staffId: staff[0]?.id || "", start: today, end: today, notes: "" });
+  const [sickDayError, setSickDayError] = useState("");
 
   function unlockTimesheet() {
     if (timesheetPin === "3490") {
@@ -2956,12 +3124,11 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
     setTimesheetPinError("Incorrect PIN code");
   }
 
-  function getPayPeriod(date = new Date()) {
+  function getClockingMonthPeriod(date = new Date()) {
     const year = date.getFullYear();
     const month = date.getMonth();
-    const day = date.getDate();
-    const start = day >= 26 ? new Date(year, month, 26) : new Date(year, month - 1, 26);
-    const end = day >= 26 ? new Date(year, month + 1, 25) : new Date(year, month, 25);
+    const start = date.getDate() >= 26 ? new Date(year, month, 26) : new Date(year, month - 1, 26);
+    const end = date.getDate() >= 26 ? new Date(year, month + 1, 25) : new Date(year, month, 25);
     return { start: toIso(start), end: toIso(end) };
   }
 
@@ -2986,22 +3153,80 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
   }
 
   function getPeriodEntries(staffId) {
-    const period = getPayPeriod(new Date());
+    const period = getClockingMonthPeriod(new Date());
     return clockEntries
       .filter((entry) => entry.staffId === staffId && entry.date >= period.start && entry.date <= period.end)
       .sort((a, b) => `${a.date} ${a.clockIn}`.localeCompare(`${b.date} ${b.clockIn}`));
   }
 
+  function getPeriodSickDays(staffId) {
+    const period = getClockingMonthPeriod(new Date());
+    return sickDays
+      .filter((entry) => entry.staffId === staffId && entry.date >= period.start && entry.date <= period.end)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  function getPeriodTimesheetRows(staffId) {
+    const clockRows = getPeriodEntries(staffId).map((entry) => ({ type: "Clock", ...entry }));
+    const sickRows = getPeriodSickDays(staffId).map((entry) => ({ type: "Sick", ...entry, clockIn: "Sick", clockOut: "Absence" }));
+    return [...clockRows, ...sickRows].sort((a, b) => `${a.date} ${a.clockIn || ""}`.localeCompare(`${b.date} ${b.clockIn || ""}`));
+  }
+
+  function getSickDayHours(entry, person) {
+    if (!isWorkingDay(new Date(entry.date))) return 0;
+    return Number(entry.hours || person?.hoursPerDay || 0);
+  }
+
+  function getSickDayDates(startIso, endIso) {
+    const dates = [];
+    let cursor = new Date(startIso);
+    const end = new Date(endIso);
+    while (cursor <= end) {
+      dates.push(toIso(cursor));
+      cursor = addDays(cursor, 1);
+    }
+    return dates;
+  }
+
+  function submitSickDays() {
+    setSickDayError("");
+    if (activeRole !== "operations") {
+      setSickDayError("Only operations users can record sick days.");
+      return;
+    }
+    if (!sickDayForm.staffId) {
+      setSickDayError("Select a staff member.");
+      return;
+    }
+    if (!sickDayForm.start || !sickDayForm.end || sickDayForm.end < sickDayForm.start) {
+      setSickDayError("Enter a valid date range.");
+      return;
+    }
+    const person = staff.find((item) => item.id === sickDayForm.staffId);
+    const records = getSickDayDates(sickDayForm.start, sickDayForm.end).map((date) => ({
+      id: `sick-${Date.now()}-${sickDayForm.staffId}-${date}`,
+      staffId: sickDayForm.staffId,
+      date,
+      hours: isWorkingDay(new Date(date)) ? Number(person?.hoursPerDay || 0) : 0,
+      notes: sickDayForm.notes || "Sick day",
+      createdAt: new Date().toISOString(),
+    }));
+    onAddSickDay?.(records);
+    setSickDayForm((current) => ({ ...current, notes: "" }));
+  }
+
   function getStaffPeriodSummary(person) {
-    const period = getPayPeriod(new Date());
+    const period = getClockingMonthPeriod(new Date());
     const workingDays = getWorkingDaysInPeriod(period.start, period.end);
     const expectedHours = workingDays * Number(person.hoursPerDay || 0);
     const entries = getPeriodEntries(person.id);
+    const absenceHours = getPeriodSickDays(person.id).reduce((sum, entry) => sum + getSickDayHours(entry, person), 0);
     const workedHours = entries.reduce((sum, entry) => sum + entryHours(entry), 0);
-    const regularHours = Math.min(workedHours, expectedHours);
-    const overtimeHours = Math.max(0, workedHours - expectedHours);
+    const countedHours = workedHours + absenceHours;
+    const regularHours = Math.min(countedHours, expectedHours);
+    const overtimeHours = Math.max(0, countedHours - expectedHours);
 
-    return { period, workingDays, expectedHours, workedHours, regularHours, overtimeHours };
+    return { period, workingDays, expectedHours, workedHours, absenceHours, countedHours, regularHours, overtimeHours };
   }
 
   function getOpenEntry(staffId) {
@@ -3017,15 +3242,15 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
     if (!entry.clockOut) return { regular: "-", overtime: "-" };
 
     const summary = getStaffPeriodSummary(person);
-    const entries = getPeriodEntries(person.id);
+    const entries = getPeriodTimesheetRows(person.id);
     let cumulativeBefore = 0;
 
     for (const item of entries) {
       if (item.id === entry.id) break;
-      cumulativeBefore += entryHours(item);
+      cumulativeBefore += item.type === "Sick" ? getSickDayHours(item, person) : entryHours(item);
     }
 
-    const hours = entryHours(entry);
+    const hours = entry.type === "Sick" ? getSickDayHours(entry, person) : entryHours(entry);
     const regularRemaining = Math.max(0, summary.expectedHours - cumulativeBefore);
     const regular = Math.min(hours, regularRemaining);
     const overtime = Math.max(0, hours - regular);
@@ -3033,9 +3258,12 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
     return { regular: regular.toFixed(2), overtime: overtime.toFixed(2) };
   }
 
-  const period = getPayPeriod(new Date());
+  const period = getClockingMonthPeriod(new Date());
   const periodWorkingDays = getWorkingDaysInPeriod(period.start, period.end);
-  const totalHours = clockEntries.reduce((sum, entry) => sum + entryHours(entry), 0);
+  const periodClockEntries = clockEntries.filter((entry) => entry.date >= period.start && entry.date <= period.end);
+  const periodSickDays = sickDays.filter((entry) => entry.date >= period.start && entry.date <= period.end);
+  const totalHours = periodClockEntries.reduce((sum, entry) => sum + entryHours(entry), 0);
+  const totalAbsenceHours = staff.reduce((sum, person) => sum + getPeriodSickDays(person.id).reduce((inner, entry) => inner + getSickDayHours(entry, person), 0), 0);
   const totalExpectedHours = staff.reduce((sum, person) => sum + periodWorkingDays * Number(person.hoursPerDay || 0), 0);
   const totalOvertimeHours = staff.reduce((sum, person) => sum + getStaffPeriodSummary(person).overtimeHours, 0);
 
@@ -3061,9 +3289,11 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
                 const summary = getStaffPeriodSummary(person);
                 return (
                   <div className="mt-3 rounded-xl bg-blue-50 p-3 text-xs text-blue-800">
-                    <p>Period: {summary.period.start} to {summary.period.end}</p>
+                    <p>Clocking month: {summary.period.start} to {summary.period.end}</p>
                     <p>Standard hours: <span className="font-bold text-blue-950">{summary.expectedHours.toFixed(2)}</span></p>
                     <p>Worked: <span className="font-bold text-blue-950">{summary.workedHours.toFixed(2)}</span></p>
+                    <p>Sick absence: <span className="font-bold text-blue-950">{summary.absenceHours.toFixed(2)}</span></p>
+                    <p>Counted total: <span className="font-bold text-blue-950">{summary.countedHours.toFixed(2)}</span></p>
                     <p>Overtime: <span className="font-bold text-blue-950">{summary.overtimeHours.toFixed(2)}</span></p>
                   </div>
                 );
@@ -3123,6 +3353,66 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
         </div>
       </div>
 
+      {activeRole === "operations" ? (
+        <div className="rounded-3xl bg-white p-5 shadow-sm">
+          <h3 className="text-lg font-bold">Record Sick Day</h3>
+          <p className="mt-1 text-sm text-blue-800">Operations-only absence entry. Sick days feed into the timesheet but do not create clock-in records.</p>
+          <div className="mt-4 grid gap-3 md:grid-cols-5">
+            <label className="text-sm font-semibold text-blue-950">
+              Staff
+              <select className="mt-1 w-full rounded-xl border border-blue-100 bg-white px-3 py-2 text-sm" value={sickDayForm.staffId} onChange={(event) => setSickDayForm((current) => ({ ...current, staffId: event.target.value }))}>
+                {staff.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-blue-950">
+              First date off
+              <TextInput type="date" value={sickDayForm.start} onChange={(event) => setSickDayForm((current) => ({ ...current, start: event.target.value, end: current.end < event.target.value ? event.target.value : current.end }))} />
+            </label>
+            <label className="text-sm font-semibold text-blue-950">
+              Last date off
+              <TextInput type="date" value={sickDayForm.end} onChange={(event) => setSickDayForm((current) => ({ ...current, end: event.target.value }))} />
+            </label>
+            <label className="text-sm font-semibold text-blue-950 md:col-span-1">
+              Notes
+              <TextInput value={sickDayForm.notes} placeholder="Optional" onChange={(event) => setSickDayForm((current) => ({ ...current, notes: event.target.value }))} />
+            </label>
+            <div className="flex items-end">
+              <button className="w-full rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={submitSickDays}>Add sick day</button>
+            </div>
+          </div>
+          {sickDayError ? <p className="mt-3 text-sm font-semibold text-red-600">{sickDayError}</p> : null}
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[600px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600">
+                  <th className="py-3 pr-3">Staff</th>
+                  <th className="py-3 pr-3">Date</th>
+                  <th className="py-3 pr-3 text-right">Hours</th>
+                  <th className="py-3 pr-3">Notes</th>
+                  <th className="py-3 pr-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {periodSickDays.length === 0 ? (
+                  <tr><td className="py-4 text-blue-600" colSpan={5}>No sick days recorded in this clocking period.</td></tr>
+                ) : periodSickDays.map((entry) => {
+                  const person = staff.find((item) => item.id === entry.staffId);
+                  return (
+                    <tr key={entry.id} className="border-b border-blue-100">
+                      <td className="py-3 pr-3 font-semibold">{person?.name || "Unknown"}</td>
+                      <td className="py-3 pr-3">{entry.date}</td>
+                      <td className="py-3 pr-3 text-right">{getSickDayHours(entry, person).toFixed(2)}</td>
+                      <td className="py-3 pr-3">{entry.notes || "Sick day"}</td>
+                      <td className="py-3 pr-3 text-right"><button className="rounded-xl border px-3 py-1 text-xs font-bold" onClick={() => onDeleteSickDay?.(entry.id)}>Remove</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
       <div className="rounded-3xl bg-white p-6 shadow-sm print:shadow-none">
         {!timesheetUnlocked ? (
           <div className="mx-auto max-w-md text-center">
@@ -3144,10 +3434,12 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
               </div>
               <div className="flex flex-col gap-3 text-right text-sm">
                 <div>
-                  <p>Pay period: {period.start} to {period.end}</p>
-                  <p>Working days: {periodWorkingDays}</p>
+                  <p>Clocking month: {period.start} to {period.end}</p>
+                  <p>Mon-Fri standard days: {periodWorkingDays}</p>
                   <p>Standard hours: {totalExpectedHours.toFixed(2)}</p>
-                  <p>Total hours: {totalHours.toFixed(2)}</p>
+                  <p>Clocked hours: {totalHours.toFixed(2)}</p>
+                  <p>Sick absence hours: {totalAbsenceHours.toFixed(2)}</p>
+                  <p>Counted hours: {(totalHours + totalAbsenceHours).toFixed(2)}</p>
                   <p>Overtime: {totalOvertimeHours.toFixed(2)}</p>
                 </div>
                 <button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={() => window.print()}>
@@ -3160,6 +3452,7 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
                 <tr className="border-b border-blue-200 text-left">
                   <th className="py-2 pr-3">Staff</th>
                   <th className="py-2 pr-3">Date</th>
+                  <th className="py-2 pr-3">Type</th>
                   <th className="py-2 pr-3">Clock In</th>
                   <th className="py-2 pr-3">Clock Out</th>
                   <th className="py-2 pr-3 text-right">Hours</th>
@@ -3168,16 +3461,17 @@ function ClockingInTab({ staff, clockEntries, onClockIn, onClockOut }) {
                 </tr>
               </thead>
               <tbody>
-                {clockEntries.map((entry) => {
-                  const person = staff.find((item) => item.id === entry.staffId);
-                  const split = person ? getEntrySplit(entry, person) : { regular: "-", overtime: "-" };
+                {staff.flatMap((person) => getPeriodTimesheetRows(person.id).map((entry) => ({ ...entry, person }))).map((entry) => {
+                  const split = getEntrySplit(entry, entry.person);
+                  const hours = entry.type === "Sick" ? getSickDayHours(entry, entry.person).toFixed(2) : calculateHours(entry);
                   return (
                     <tr key={`sheet-${entry.id}`} className="border-b border-blue-100">
-                      <td className="py-3 pr-3">{person?.name || "Unknown"}</td>
+                      <td className="py-3 pr-3">{entry.person?.name || "Unknown"}</td>
                       <td className="py-3 pr-3">{entry.date}</td>
+                      <td className="py-3 pr-3">{entry.type}</td>
                       <td className="py-3 pr-3">{entry.clockIn}</td>
                       <td className="py-3 pr-3">{entry.clockOut || "Open"}</td>
-                      <td className="py-3 pr-3 text-right">{calculateHours(entry)}</td>
+                      <td className="py-3 pr-3 text-right">{hours}</td>
                       <td className="py-3 pr-3 text-right">{split.regular}</td>
                       <td className="py-3 pr-3 text-right font-bold">{split.overtime}</td>
                     </tr>
@@ -3324,7 +3618,7 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
   );
 }
 
-function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, customProducts }) {
+function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts }) {
   const productDatabase = getProductDatabase(customProducts);
   const [addStockOpen, setAddStockOpen] = useState(false);
   const totalStockLines = stockItems.length;
@@ -3336,7 +3630,7 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
   return (
     <div className="space-y-6">
       <div className="rounded-3xl bg-white p-5 shadow-sm">
-        <SectionHeader eyebrow="Inventory" title="Stock Inventory" description="Track stock on site, on order, allocated job lengths, offcuts and PO/enquiry traceability." />
+        <SectionHeader eyebrow="Inventory" title="Stock Inventory" description="Track stock on site, on order, allocated job lengths, offcuts and PO traceability. Enquiries do not create stock until raised as POs." />
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
@@ -3412,7 +3706,8 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
                         <p className="mt-1 text-[11px] font-bold text-blue-700">Source: {getStockTraceabilityNumber(item)}</p>
                         {segment.scrapReason ? <p className="mt-1 rounded bg-red-50 px-2 py-1 font-bold text-red-700">Scrapped: {segment.scrapReason}</p> : null}
                         {allocationRows.length ? <div className="mt-1 space-y-1">{allocationRows.map((allocation) => <p key={allocation.id} className="rounded bg-white px-2 py-1 font-bold text-blue-950">Allocated {formatLengthM(allocation.lengthM)} to {allocation.jobNo}{allocation.jobTitle ? ` · ${allocation.jobTitle}` : ""}</p>)}</div> : <p className="mt-1 font-semibold text-emerald-700">No job allocation yet</p>}
-                        {segment.status !== "Consumed" && Number(segment.availableLengthM || 0) > 0 ? <button className="mt-2 rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-black text-red-700" onClick={() => onScrapStockSegment(item.id, segment.id)}>Scrap / remove offcut</button> : null}
+                        {item.stockLineType === "Allocated" || item.stockLineType === "Allocated Cut" ? <button className="mt-2 rounded-lg border border-emerald-200 bg-white px-2 py-1 text-[11px] font-black text-emerald-700" onClick={() => onCutAllocatedStockItem(item.id)}>Cut / consume allocated line</button> : null}
+                        {(item.stockLineType === "Offcut" || segment.status === "Offcut") && segment.status !== "Consumed" && Number(segment.availableLengthM || 0) > 0 ? <div className="mt-2 flex flex-wrap gap-2"><button className="rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-black text-blue-700" onClick={() => onManualCutOffcutStockItem(item.id)}>Manual cut</button><button className="rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-black text-red-700" onClick={() => onScrapStockSegment(item.id, segment.id)}>Scrap offcut</button></div> : null}
                       </div>
                     );
                   })}</div></td>
@@ -3972,11 +4267,15 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
     topPlateWidth: "300",
     topPlateLength: "",
     topPlateQuantity: 1,
+    topPlateWeldHitMm: "",
+    topPlateWeldMissMm: "",
     bottomPlateRequired: "No",
     bottomPlateThickness: "8",
     bottomPlateWidth: "300",
     bottomPlateLength: "",
     bottomPlateQuantity: 1,
+    bottomPlateWeldHitMm: "",
+    bottomPlateWeldMissMm: "",
     basePlateRequired: "No",
     basePlateQuantity: 1,
     basePlateThickness: "10",
@@ -4343,11 +4642,11 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
 
             <div className="rounded-2xl bg-blue-50 p-4">
               <Field label="Top Plate"><SelectInput value={lineForm.topPlateRequired || "No"} onChange={(event) => updateLineForm({ topPlateRequired: event.target.value })}><option>No</option><option>Yes</option></SelectInput></Field>
-              {lineForm.topPlateRequired === "Yes" ? <div className="mt-4 grid gap-3 md:grid-cols-4"><Field label="Thickness mm"><TextInput type="number" value={lineForm.topPlateThickness} onChange={(event) => updateLineForm({ topPlateThickness: event.target.value })} /></Field><Field label="Width mm"><TextInput type="number" value={lineForm.topPlateWidth} onChange={(event) => updateLineForm({ topPlateWidth: event.target.value })} /></Field><Field label="Length m"><TextInput type="number" value={lineForm.topPlateLength} onChange={(event) => updateLineForm({ topPlateLength: event.target.value })} placeholder="Blank = beam length" /></Field><Field label="Quantity"><TextInput type="number" value={lineForm.topPlateQuantity} onChange={(event) => updateLineForm({ topPlateQuantity: event.target.value })} /></Field></div> : null}
+              {lineForm.topPlateRequired === "Yes" ? <div className="mt-4 grid gap-3 md:grid-cols-6"><Field label="Thickness mm"><TextInput type="number" value={lineForm.topPlateThickness} onChange={(event) => updateLineForm({ topPlateThickness: event.target.value })} /></Field><Field label="Width mm"><TextInput type="number" value={lineForm.topPlateWidth} onChange={(event) => updateLineForm({ topPlateWidth: event.target.value })} /></Field><Field label="Length m"><TextInput type="number" value={lineForm.topPlateLength} onChange={(event) => updateLineForm({ topPlateLength: event.target.value })} placeholder="Blank = beam length" /></Field><Field label="Quantity"><TextInput type="number" value={lineForm.topPlateQuantity} onChange={(event) => updateLineForm({ topPlateQuantity: event.target.value })} /></Field><Field label="Weld hit mm"><TextInput type="number" value={lineForm.topPlateWeldHitMm || ""} onChange={(event) => updateLineForm({ topPlateWeldHitMm: event.target.value })} /></Field><Field label="Weld miss mm"><TextInput type="number" value={lineForm.topPlateWeldMissMm || ""} onChange={(event) => updateLineForm({ topPlateWeldMissMm: event.target.value })} /></Field></div> : null}
             </div>
             <div className="rounded-2xl bg-blue-50 p-4">
               <Field label="Bottom Plate"><SelectInput value={lineForm.bottomPlateRequired || "No"} onChange={(event) => updateLineForm({ bottomPlateRequired: event.target.value })}><option>No</option><option>Yes</option></SelectInput></Field>
-              {lineForm.bottomPlateRequired === "Yes" ? <div className="mt-4 grid gap-3 md:grid-cols-4"><Field label="Thickness mm"><TextInput type="number" value={lineForm.bottomPlateThickness} onChange={(event) => updateLineForm({ bottomPlateThickness: event.target.value })} /></Field><Field label="Width mm"><TextInput type="number" value={lineForm.bottomPlateWidth} onChange={(event) => updateLineForm({ bottomPlateWidth: event.target.value })} /></Field><Field label="Length m"><TextInput type="number" value={lineForm.bottomPlateLength} onChange={(event) => updateLineForm({ bottomPlateLength: event.target.value })} placeholder="Blank = beam length" /></Field><Field label="Quantity"><TextInput type="number" value={lineForm.bottomPlateQuantity} onChange={(event) => updateLineForm({ bottomPlateQuantity: event.target.value })} /></Field></div> : null}
+              {lineForm.bottomPlateRequired === "Yes" ? <div className="mt-4 grid gap-3 md:grid-cols-6"><Field label="Thickness mm"><TextInput type="number" value={lineForm.bottomPlateThickness} onChange={(event) => updateLineForm({ bottomPlateThickness: event.target.value })} /></Field><Field label="Width mm"><TextInput type="number" value={lineForm.bottomPlateWidth} onChange={(event) => updateLineForm({ bottomPlateWidth: event.target.value })} /></Field><Field label="Length m"><TextInput type="number" value={lineForm.bottomPlateLength} onChange={(event) => updateLineForm({ bottomPlateLength: event.target.value })} placeholder="Blank = beam length" /></Field><Field label="Quantity"><TextInput type="number" value={lineForm.bottomPlateQuantity} onChange={(event) => updateLineForm({ bottomPlateQuantity: event.target.value })} /></Field><Field label="Weld hit mm"><TextInput type="number" value={lineForm.bottomPlateWeldHitMm || ""} onChange={(event) => updateLineForm({ bottomPlateWeldHitMm: event.target.value })} /></Field><Field label="Weld miss mm"><TextInput type="number" value={lineForm.bottomPlateWeldMissMm || ""} onChange={(event) => updateLineForm({ bottomPlateWeldMissMm: event.target.value })} /></Field></div> : null}
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
@@ -4404,14 +4703,14 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-base font-bold">Pricing</h3>
-            <p className="mt-1 text-sm text-blue-800">Internal pricing schedule. Markup is fixed £ uplift.</p>
+            <p className="mt-1 text-sm text-blue-800">Internal pricing schedule. Steel and finish rows are £/tonne; fixed process rows are per item/process.</p>
           </div>
           <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setPricingPanelOpen(!pricingPanelOpen)}>{pricingPanelOpen ? "Hide pricing" : "Open pricing"}</button>
         </div>
         {pricingPanelOpen ? <div className="mt-4 overflow-auto rounded-2xl border border-blue-100">
           <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead><tr className="border-b border-blue-100 bg-blue-50 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pl-3 pr-3">Product / Process</th><th className="py-3 pr-3 text-right">Buy price</th><th className="py-3 pr-3 text-right">Markup £</th><th className="py-3 pr-3 text-right">Sell</th></tr></thead>
-            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : null}</td><td className="py-2 pr-3"><TextInput type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td></tr>)}</tbody>
+            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td></tr>)}</tbody>
           </table>
         </div> : null}
       </div>
@@ -4948,21 +5247,22 @@ function buildJobSheetPreviewHtml({ job, quote, customer, companySettings }) {
       <thead>
         <tr>
           <th class="op-col">OP</th>
-          <th>Operation Description</th>
-          <th class="completed-col">Completed By</th>
+          <th class="operation-col">Workshop operation</th>
+          <th class="trace-col">Checks / traceability</th>
+          <th class="completed-col">Completed by</th>
           <th class="date-col">Date</th>
         </tr>
       </thead>
       <tbody>
-        <tr class="shade"><td>1</td><td>Cut &amp; Process parts as specified</td><td></td><td></td></tr>
-        <tr><td>2</td><td>Assemble and weld components</td><td></td><td></td></tr>
-        <tr class="shade"><td></td><td>Machine No:<span class="batch-label">Wire Batch No:</span></td><td></td><td></td></tr>
-        <tr><td></td><td>Machine No:<span class="batch-label">Wire Batch No:</span></td><td></td><td></td></tr>
-        <tr class="shade"><td></td><td>Machine No:<span class="batch-label">Wire Batch No:</span></td><td></td><td></td></tr>
-        <tr><td>3</td><td>Check all dimensions are correct</td><td></td><td></td></tr>
-        <tr class="shade"><td>4</td><td>Paint &amp; Label parts as required</td><td></td><td></td></tr>
-        <tr><td>5</td><td>Assemble all parts and check job is complete</td><td></td><td></td></tr>
-        <tr class="shade sign-row"><td>6</td><td>Final Inspection and sign off<br><span class="signed-line">Signed ...............................................................</span></td><td></td><td></td></tr>
+        <tr><td class="op-number">1</td><td>Cut and process parts as specified.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr><td class="op-number">2</td><td>Assemble and weld components.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr class="trace-row"><td></td><td>Welding traceability 1</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr class="trace-row"><td></td><td>Welding traceability 2</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr class="trace-row"><td></td><td>Welding traceability 3</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr><td class="op-number">3</td><td>Check all dimensions are correct.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr><td class="op-number">4</td><td>Paint and label parts as required.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr><td class="op-number">5</td><td>Assemble all parts and check job is complete.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
+        <tr class="sign-row"><td class="op-number">6</td><td>Final inspection and sign off.</td><td class="signature-cell">Signature:</td><td class="write-line"></td><td class="write-line"></td></tr>
       </tbody>
     </table>
   `;
@@ -4988,16 +5288,21 @@ function buildJobSheetPreviewHtml({ job, quote, customer, companySettings }) {
     table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
     th { text-align: left; color: #2563eb; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #bfdbfe; padding: 8px; }
     td { border-bottom: 1px solid #dbeafe; padding: 9px 8px; vertical-align: top; }
-    .operations-table { font-size: 13px; border: 1px solid #bfbfbf; }
-    .operations-table th { color: #000; font-size: 13px; text-transform: none; border: 1px solid #bfbfbf; padding: 5px 6px; }
-    .operations-table td { border: 1px solid #bfbfbf; padding: 6px; color: #000; }
-    .operations-table .shade { background: #d1d1d1; }
-    .op-col { width: 44px; }
-    .completed-col { width: 190px; }
-    .date-col { width: 120px; }
-    .batch-label { display: inline-block; margin-left: 180px; }
-    .sign-row td { height: 44px; }
-    .signed-line { display: block; margin-top: 18px; text-align: center; }
+    .operations-table { font-size: 11px; border: 1px solid #94a3b8; table-layout: fixed; page-break-inside: avoid; }
+    .operations-table th { color: #0f172a; background: #eaf2ff; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid #94a3b8; padding: 7px 8px; }
+    .operations-table td { border: 1px solid #cbd5e1; padding: 8px; color: #0f172a; line-height: 1.35; vertical-align: top; }
+    .operations-table tbody tr:nth-child(even) { background: #f8fafc; }
+    .operations-table .trace-row { background: #f1f5f9; }
+    .op-col { width: 38px; }
+    .operation-col { width: 32%; }
+    .trace-col { width: 30%; }
+    .completed-col { width: 18%; }
+    .date-col { width: 90px; }
+    .op-number { text-align: center; font-weight: 700; }
+    .write-line { min-height: 30px; }
+    .fill-line { display: inline-block; width: 80px; border-bottom: 1px solid #334155; transform: translateY(-2px); }
+    .signature-cell { min-height: 42px; }
+    .sign-row td { height: 48px; }
     small { color: #1d4ed8; }
     .right { text-align: right; }
     .notes { margin-top: 18px; border: 1px solid #bfdbfe; border-radius: 12px; min-height: 80px; padding: 12px; font-size: 12px; }
@@ -5035,6 +5340,78 @@ function printJobSheetPdf({ job, quote, customer, companySettings, onRegisterDoc
   const html = buildJobSheetPreviewHtml({ job, quote, customer, companySettings });
   printWindow.document.write(html);
   if (onRegisterDocument) onRegisterDocument({ html, documentType: "job_sheet_pdf", title: `Job Sheet ${job.jobNo}`, relatedResource: "jobs", relatedResourceId: job.id, jobId: job.id, customerId: job.customerId, documentNo: job.jobNo });
+  printWindow.document.close();
+}
+
+
+function buildDeliveryNotePreviewHtml({ note, job, customer, companySettings }) {
+  const safeSettings = companySettings || initialCompanySettings;
+  const address = [safeSettings.addressLine1, safeSettings.addressLine2, safeSettings.city, safeSettings.county, safeSettings.postcode, safeSettings.country].filter(Boolean).join(", ");
+  const deliveryAddress = note.address || customer?.deliveryAddress || "";
+  const rows = (note.items || []).map((item) => `
+    <tr>
+      <td>${item.description || ""}</td>
+      <td class="right">${item.quantity || 0}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${note.dnNo || "Delivery Note"}</title>
+  <style>
+    @page { size: A4; margin: 16mm; }
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; }
+    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 1px solid #bfdbfe; padding-bottom: 16px; }
+    .brand { display: flex; gap: 16px; align-items: flex-start; }
+    .logo { max-width: 150px; max-height: 80px; object-fit: contain; }
+    h1 { margin: 4px 0 0; font-size: 30px; }
+    .muted { color: #1e40af; font-size: 12px; }
+    .company { text-align: right; font-size: 12px; max-width: 260px; line-height: 1.45; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; border-bottom: 1px solid #dbeafe; padding: 20px 0; }
+    h3 { color: #2563eb; font-size: 12px; text-transform: uppercase; margin: 0 0 8px; }
+    p { margin: 3px 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+    th { text-align: left; color: #2563eb; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid #bfdbfe; padding: 8px; }
+    td { border-bottom: 1px solid #dbeafe; padding: 10px 8px; vertical-align: top; }
+    .right { text-align: right; }
+    .signature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 42px; }
+    .signature-box { border: 1px solid #dbeafe; border-radius: 14px; padding: 18px; min-height: 95px; }
+    .signature-line { border-top: 1px solid #64748b; margin-top: 44px; padding-top: 8px; color: #1d4ed8; font-size: 12px; }
+    .note { margin-top: 24px; color: #1d4ed8; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      ${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}
+      <div><div class="muted">${safeSettings.name || "JDFabs"}</div><h1>Delivery Note</h1><p class="muted">${note.dnNo || ""}</p></div>
+    </div>
+    <div class="company"><strong>${safeSettings.legalName || safeSettings.name || "JDFabs"}</strong>${address ? `<br>${address}` : ""}${safeSettings.phone ? `<br>${safeSettings.phone}` : ""}${safeSettings.email ? `<br>${safeSettings.email}` : ""}${safeSettings.website ? `<br>${safeSettings.website}` : ""}${safeSettings.vatNumber ? `<br>VAT: ${safeSettings.vatNumber}` : ""}</div>
+  </div>
+  <div class="grid">
+    <div><h3>Customer</h3><p><strong>${customer?.company || job?.customer || ""}</strong></p><p>Contact: ${customer?.contact || note.deliveredTo || ""}</p><p>Email: ${customer?.email || ""}</p><p>Phone: ${customer?.phone || ""}</p></div>
+    <div><h3>Delivery Details</h3><p>Delivery Note: <strong>${note.dnNo || ""}</strong></p><p>Date: <strong>${note.date || ""}</strong></p><p>Job No: <strong>${job?.jobNo || ""}</strong></p><p>Job: <strong>${job?.title || ""}</strong></p><p>Delivered To: <strong>${note.deliveredTo || ""}</strong></p><p>Address: <strong>${deliveryAddress}</strong></p></div>
+  </div>
+  <table><thead><tr><th>Description</th><th class="right">Quantity</th></tr></thead><tbody>${rows || `<tr><td colspan="2">No delivery items listed.</td></tr>`}</tbody></table>
+  <div class="signature-grid">
+    <div class="signature-box"><p><strong>Received in good condition</strong></p><div class="signature-line">Print name</div></div>
+    <div class="signature-box"><p><strong>Customer signature</strong></p><div class="signature-line">Signature / date</div></div>
+  </div>
+  <p class="note">Delivery note for the referenced JDFabs job. Pricing is intentionally excluded.</p>
+  <script>window.onload = function () { window.focus(); window.print(); };</script>
+</body>
+</html>`;
+}
+
+function printDeliveryNotePdf({ note, job, customer, companySettings, onRegisterDocument }) {
+  const printWindow = window.open("", "_blank", "width=900,height=1200");
+  if (!printWindow) return;
+  printWindow.document.open();
+  const html = buildDeliveryNotePreviewHtml({ note, job, customer, companySettings });
+  printWindow.document.write(html);
+  if (onRegisterDocument) onRegisterDocument({ html, documentType: "delivery_note_pdf", title: `Delivery Note ${note.dnNo}`, relatedResource: "delivery_notes", relatedResourceId: note.id, jobId: note.jobId, customerId: note.customerId, documentNo: note.dnNo });
   printWindow.document.close();
 }
 
@@ -5151,7 +5528,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const today = toIso(new Date());
   const savedAppState = useMemo(() => loadSavedAppState(), []);
   const [customers, setCustomers] = useState(savedAppState.customers || initialCustomers);
-  const [staff, setStaff] = useState(() => (savedAppState.staff || initialStaff).map((person) => normaliseStaffRolePriorities({ ...person, pin: getStaffPin(person) })));
+  const [staff, setStaff] = useState(() => (savedAppState.staff || initialStaff).map((person) => normaliseStaffRolePriorities({ ...person, status: person.status || "Active", pin: getStaffPin(person) })));
   const [suppliers, setSuppliers] = useState(savedAppState.suppliers || initialSuppliers);
   const [xeroSyncStatus, setXeroSyncStatus] = useState("");
   const [quotes, setQuotes] = useState(savedAppState.quotes || initialQuotes);
@@ -5171,6 +5548,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [companySettings, setCompanySettings] = useState(savedAppState.companySettings || initialCompanySettings);
   const [clockEntries, setClockEntries] = useState(savedAppState.clockEntries || []);
   const [holidays, setHolidays] = useState(savedAppState.holidays || []);
+  const [sickDays, setSickDays] = useState(savedAppState.sickDays || []);
   const [holidayForms, setHolidayForms] = useState({});
   const [holidayStaffPins, setHolidayStaffPins] = useState({});
   const [holidayStaffPinErrors, setHolidayStaffPinErrors] = useState({});
@@ -5188,7 +5566,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [pinError, setPinError] = useState("");
   const [xeroStatus, setXeroStatus] = useState({});
   const [unlockedTabs, setUnlockedTabs] = useState({ quotes: false, jobs: false });
-  const [pricingSchedule, setPricingSchedule] = useState(savedAppState.pricingSchedule || defaultSteelPricingSchedule);
+  const [pricingSchedule, setPricingSchedule] = useState(normaliseSteelPricingSchedule(savedAppState.pricingSchedule || defaultSteelPricingSchedule));
   const [productivityRules, setProductivityRules] = useState(() => normaliseProductivityRules(savedAppState.productivityRules || defaultProductivityRules));
   const [customProducts, setCustomProducts] = useState(savedAppState.customProducts || []);
   const [storedDocuments, setStoredDocuments] = useState(savedAppState.storedDocuments || []);
@@ -5219,7 +5597,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [expandedJobDetailsId, setExpandedJobDetailsId] = useState(null);
   const [purchasingFormOpen, setPurchasingFormOpen] = useState(false);
   const [selectedSignedDeliveryNoteId, setSelectedSignedDeliveryNoteId] = useState(null);
-  const [newStaff, setNewStaff] = useState({ name: "", hoursPerDay: 8, roles: [], rolePriorities: {} });
+  const [newStaff, setNewStaff] = useState({ name: "", hoursPerDay: 8, pin: "", roles: [], rolePriorities: {} });
   const [addStaffOpen, setAddStaffOpen] = useState(false);
   const [showManualJobForm, setShowManualJobForm] = useState(false);
   const [newJob, setNewJob] = useState({
@@ -5472,6 +5850,34 @@ export default function FabricationProductionPlannerIntegrated() {
     });
   }
 
+  function addSickDays(records) {
+    if (activeRole !== "operations" || !records?.length) return;
+    setSickDays((current) => [...current, ...records]);
+    setAuditLog((current) => [{
+      id: createEntityId("audit"),
+      createdAt: new Date().toISOString(),
+      role: activeRole,
+      action: "create",
+      resource: "sick_days",
+      recordId: records.map((record) => record.id).join(", "),
+      notes: "Sick day absence recorded.",
+    }, ...current]);
+  }
+
+  function deleteSickDay(id) {
+    if (activeRole !== "operations") return;
+    setSickDays((current) => current.filter((entry) => entry.id !== id));
+    setAuditLog((current) => [{
+      id: createEntityId("audit"),
+      createdAt: new Date().toISOString(),
+      role: activeRole,
+      action: "delete",
+      resource: "sick_days",
+      recordId: id,
+      notes: "Sick day absence removed.",
+    }, ...current]);
+  }
+
   function updateHolidayForm(staffId, patch) {
     setHolidayForms((current) => ({
       ...current,
@@ -5622,18 +6028,58 @@ export default function FabricationProductionPlannerIntegrated() {
       : person));
   }
 
+  function updateStaffPin(staffId, value) {
+    const pin = String(value || "").replace(/[^0-9]/g, "").slice(0, 4);
+    setStaff((current) => current.map((person) => person.id === staffId ? { ...person, pin } : person));
+  }
+
+  function deactivateStaffMember(staffId) {
+    const person = staff.find((item) => item.id === staffId);
+    if (!person) return;
+    if (!window.confirm(`Deactivate ${person.name}? Historic jobs, clock entries, sick days and timesheets will remain linked.`)) return;
+    setStaff((current) => current.map((item) => item.id === staffId ? { ...item, status: "Inactive", deactivatedAt: new Date().toISOString() } : item));
+    setAuditLog((current) => [{
+      id: createEntityId("audit"),
+      createdAt: new Date().toISOString(),
+      role: activeRole,
+      action: "deactivate",
+      resource: "staff",
+      recordId: staffId,
+      notes: "Staff member deactivated. Historic records preserved.",
+    }, ...current]);
+  }
+
+  function reactivateStaffMember(staffId) {
+    setStaff((current) => current.map((item) => item.id === staffId ? { ...item, status: "Active", reactivatedAt: new Date().toISOString() } : item));
+    setAuditLog((current) => [{
+      id: createEntityId("audit"),
+      createdAt: new Date().toISOString(),
+      role: activeRole,
+      action: "reactivate",
+      resource: "staff",
+      recordId: staffId,
+      notes: "Staff member reactivated.",
+    }, ...current]);
+  }
+
   function addStaffMember() {
     if (!newStaff.name.trim()) return;
+    const staffPin = String(newStaff.pin || "").replace(/[^0-9]/g, "").slice(0, 4);
+    if (staffPin.length !== 4) {
+      setActionStatus("Enter a 4 digit staff PIN before adding staff.");
+      return;
+    }
     const staffMember = normaliseStaffRolePriorities({
       id: createEntityId("staff"),
       name: newStaff.name.trim(),
       roles: newStaff.roles,
       rolePriorities: newStaff.rolePriorities,
       hoursPerDay: Number(newStaff.hoursPerDay || 0),
-      pin: "3490",
+      pin: staffPin,
+      status: "Active",
     });
     actionService.createRecord({ resource: "staff", record: staffMember, setter: setStaff, notes: "Staff member created." });
-    setNewStaff({ name: "", hoursPerDay: 8, roles: [], rolePriorities: {} });
+    setNewStaff({ name: "", hoursPerDay: 8, pin: "", roles: [], rolePriorities: {} });
   }
 
   function toggleNewStaffRole(role) {
@@ -5977,6 +6423,8 @@ export default function FabricationProductionPlannerIntegrated() {
     const po = { id: createEntityId("po"), poNo: reservedPoNumber.number, enquiryNo: "", documentKind: "Purchase Order", jobId: newPo.jobId, supplierId: newPo.supplierId, date: today, requiredBy: newPo.requiredBy, status: "Draft PO", items, ...totals };
     const created = actionService.createRecord({ resource: "purchase_orders", record: po, setter: setPurchaseOrders, notes: "Purchase order raised against job." });
     if (!created) return;
+    const onOrderItems = createStockItemsFromPurchasingDocument(po, "On Order");
+    if (onOrderItems.length) setStockItems((current) => [...onOrderItems, ...current]);
     updateJob(job.id, { status: "Waiting Material", materialsDue: newPo.requiredBy });
     setNewPo({ ...newPo, lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: "", finish: "Self colour" }, 1, 1, customProducts)] });
   }
@@ -6008,17 +6456,32 @@ export default function FabricationProductionPlannerIntegrated() {
     setStockItems((current) => scrapStockSegment(current, { stockItemId, segmentId, reason: reason || "Scrapped offcut" }));
   }
 
+  function cutAllocatedStockItem(stockItemId) {
+    if (!actionService.guard("canDelete", "stock_items", "Allocated stock cut and consumed.")) return;
+    setStockItems((current) => consumeAllocatedStockLine(current, stockItemId));
+  }
+
+  function manualCutOffcutStockItem(stockItemId) {
+    if (!actionService.guard("canUpdate", "stock_items", "Manual cut taken from offcut stock.")) return;
+    const source = stockItems.find((item) => item.id === stockItemId);
+    const maxLength = Number(source?.length || getRemainingLengthForStockItem(source) || 0);
+    const input = typeof window !== "undefined" ? window.prompt(`Cut length in metres from this offcut? Max ${formatLengthM(maxLength)}`, "") : "";
+    const cutLength = normaliseLengthM(input) || Number(input || 0);
+    if (!cutLength || cutLength <= 0 || cutLength > maxLength + 0.0001) return;
+    const jobId = typeof window !== "undefined" ? window.prompt("Optional job ID to allocate this manual cut to. Leave blank if not job-linked.", source?.allocatedJobId || "") : "";
+    setStockItems((current) => cutOffcutStockLine(current, { stockItemId, lengthM: cutLength, jobId: jobId || "" }));
+  }
+
   function updatePOStatus(poId, status) {
     const existingPo = purchaseOrders.find((item) => item.id === poId);
     if (!existingPo) return;
     actionService.updateRecord({ resource: getPurchasingPermissionResource(existingPo), id: poId, patch: { status }, setter: setPurchaseOrders, notes: `${getPurchasingDocumentTitle(existingPo)} status updated.` });
     const po = existingPo;
-    if ((status === "Sent" || status === "Enquiry Sent") && po) {
+    if (status === "Sent" && po && !isEnquiryDocument(po)) {
       const onOrderItems = createStockItemsFromPurchasingDocument(po, "On Order");
       if (onOrderItems.length) setStockItems((current) => {
-        const existingDocIds = new Set(current.filter((item) => item.purchaseDocumentId === po.id).map((item) => `${item.productId}-${item.sectionSize}-${item.length}`));
-        const freshItems = onOrderItems.filter((item) => !existingDocIds.has(`${item.productId}-${item.sectionSize}-${item.length}`));
-        return freshItems.length ? [...freshItems, ...current] : current;
+        const hasDocumentStock = current.some((item) => item.purchaseDocumentId === po.id);
+        return hasDocumentStock ? current : [...onOrderItems, ...current];
       });
     }
     if (po && status === "Received") {
@@ -6043,13 +6506,16 @@ export default function FabricationProductionPlannerIntegrated() {
     if (!enquiry) return;
     const reservedPoNumber = reserveDocumentNumberSync({ documentType: "purchaseOrder", records: purchaseOrders, linkedSourceNumber: "" });
     const totals = calculatePoTotals(enquiry.items || [], Number(enquiry.vatRate || 20));
+    const raisedPo = { ...enquiry, ...totals, documentKind: "Purchase Order", poNo: reservedPoNumber.number, status: "Draft PO", raisedFromEnquiryNo: enquiry.enquiryNo || "" };
     actionService.updateRecord({
       resource: "purchase_orders",
       id: poId,
-      patch: { ...enquiry, ...totals, documentKind: "Purchase Order", poNo: reservedPoNumber.number, status: "Draft PO", raisedFromEnquiryNo: enquiry.enquiryNo || "" },
+      patch: raisedPo,
       setter: setPurchaseOrders,
       notes: "Supplier enquiry converted to formal purchase order.",
     });
+    const onOrderItems = createStockItemsFromPurchasingDocument(raisedPo, "On Order");
+    if (onOrderItems.length) setStockItems((current) => current.some((item) => item.purchaseDocumentId === raisedPo.id) ? current : [...onOrderItems, ...current]);
   }
 
   function startEditPurchaseOrder(po) {
@@ -6410,6 +6876,7 @@ export default function FabricationProductionPlannerIntegrated() {
       companySettings,
       clockEntries,
       holidays,
+      sickDays,
       stageTimeEntries,
       pricingSchedule,
       productivityRules,
@@ -6431,7 +6898,7 @@ export default function FabricationProductionPlannerIntegrated() {
     } else {
       setCloudSyncStatus("Local save active");
     }
-  }, [customers, staff, suppliers, quotes, plannerQuotePackages, jobs, purchaseOrders, deliveryNotes, stockItems, importLogs, companySettings, clockEntries, holidays, stageTimeEntries, pricingSchedule, productivityRules, customProducts, storedDocuments, profiles, auditLog, authStatus, recordLocks]);
+  }, [customers, staff, suppliers, quotes, plannerQuotePackages, jobs, purchaseOrders, deliveryNotes, stockItems, importLogs, companySettings, clockEntries, holidays, sickDays, stageTimeEntries, pricingSchedule, productivityRules, customProducts, storedDocuments, profiles, auditLog, authStatus, recordLocks]);
 
   function addCustomProduct(product) {
     const created = actionService.createRecord({ resource: "custom_products", record: product, setter: setCustomProducts, notes: "Custom product created from Quote Builder setup." });
@@ -6477,6 +6944,7 @@ export default function FabricationProductionPlannerIntegrated() {
       companySettings,
       clockEntries,
       holidays,
+      sickDays,
       stageTimeEntries,
       pricingSchedule,
       productivityRules,
@@ -6622,7 +7090,7 @@ export default function FabricationProductionPlannerIntegrated() {
         ) : null}
 
         {activeTab === "clocking" ? (
-          <ClockingInTab staff={staff} clockEntries={clockEntries} onClockIn={clockInStaff} onClockOut={clockOutStaff} />
+          <ClockingInTab staff={staff} clockEntries={clockEntries} sickDays={sickDays} activeRole={activeRole} onClockIn={clockInStaff} onClockOut={clockOutStaff} onAddSickDay={addSickDays} onDeleteSickDay={deleteSickDay} />
         ) : null}
 
         {activeTab === "holiday" ? (
@@ -6712,6 +7180,8 @@ export default function FabricationProductionPlannerIntegrated() {
             onUpdateStockItem={updateStockItem}
             onAllocateStockItem={allocateStockItem}
             onScrapStockSegment={scrapStockItemSegment}
+            onCutAllocatedStockItem={cutAllocatedStockItem}
+            onManualCutOffcutStockItem={manualCutOffcutStockItem}
             customProducts={customProducts}
           />
         ) : null}
@@ -6941,7 +7411,8 @@ export default function FabricationProductionPlannerIntegrated() {
                                 <div className="grid gap-2 md:grid-cols-3 md:items-end">
                                   <Field label="Product"><SelectInput value={item.productId || "ub"} onChange={(event) => { const options = getSectionOptions(event.target.value, customProducts); updateEditingPoLine(item.id, { productId: event.target.value, sectionSize: options[0] || "" }); }}>{productDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
                                   <Field label="Section / Size"><SelectInput value={item.sectionSize || ""} onChange={(event) => updateEditingPoLine(item.id, { sectionSize: event.target.value })}>{getSectionOptions(item.productId || "ub", customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></Field>
-                                  <Field label="Length"><TextInput value={item.length || ""} onChange={(event) => updateEditingPoLine(item.id, { length: event.target.value })} placeholder="e.g. 6m / 4400mm" /></Field>
+                                  <Field label="Ordered length"><TextInput value={item.length || ""} onChange={(event) => updateEditingPoLine(item.id, { length: event.target.value })} placeholder="e.g. 6m / 4400mm" /></Field>
+                                  <Field label="Allocated cut"><TextInput value={item.requiredCutLength || item.allocatedLength || item.length || ""} onChange={(event) => updateEditingPoLine(item.id, { requiredCutLength: event.target.value })} placeholder="job cut e.g. 4m" /></Field>
                                   <Field label="Quantity"><SelectInput value={item.quantity || 1} onChange={(event) => updateEditingPoLine(item.id, { quantity: event.target.value })}>{Array.from({ length: 20 }, (_, qtyIndex) => qtyIndex + 1).map((qty) => <option key={qty} value={qty}>{qty}</option>)}</SelectInput></Field>
                                   <Field label="Finish"><SelectInput value={item.finish || "Self colour"} onChange={(event) => updateEditingPoLine(item.id, { finish: event.target.value })}>{steelFinishOptions.map((finish) => <option key={finish}>{finish}</option>)}</SelectInput></Field>
                                   <Field label="Price £"><TextInput type="number" step="0.01" value={item.unitCost || ""} onChange={(event) => updateEditingPoLine(item.id, { unitCost: event.target.value })} placeholder="0.00" /></Field>
@@ -7004,7 +7475,7 @@ export default function FabricationProductionPlannerIntegrated() {
                           </div>
                           <div className="mt-4 flex flex-col gap-3 md:flex-row">
                             <SelectInput value={note.status} onChange={(event) => updateDeliveryStatus(note.id, event.target.value)}>{deliveryStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput>
-                            <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => window.print()}>Print preview</button>
+                            <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => printDeliveryNotePdf({ note, job, customer, companySettings, onRegisterDocument: registerGeneratedDocument })}>Print / Save delivery note PDF</button>
                             <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white" onClick={() => signDeliveryNote(note.id)}>Signed</button>
                           </div>
                           <DeliveryNotePreview note={note} job={job} customer={customer} companySettings={companySettings} />
@@ -7041,7 +7512,7 @@ export default function FabricationProductionPlannerIntegrated() {
                                   <p className="text-lg font-bold">{selectedSignedNote.dnNo} · Signed</p>
                                   <p className="text-sm text-blue-800">{job?.customer} · {job?.jobNo}</p>
                                 </div>
-                                <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => window.print()}>Print signed note</button>
+                                <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => printDeliveryNotePdf({ note: selectedSignedNote, job, customer, companySettings, onRegisterDocument: registerGeneratedDocument })}>Print / Save signed note PDF</button>
                               </div>
                               <DeliveryNotePreview note={selectedSignedNote} job={job} customer={customer} companySettings={companySettings} />
                             </div>
@@ -7179,10 +7650,18 @@ export default function FabricationProductionPlannerIntegrated() {
                 <h2 className="text-lg font-bold">Staff</h2>
                 <p className="mt-1 text-sm text-blue-800">Tick the job stages each staff member can cover, then rank each selected stage. Priority 1 is their preferred/best role for automatic planning.</p>
                 <div className="mt-4 space-y-4">
-                  {staff.map((person) => (
+                  {staff.filter(isStaffActive).map((person) => (
                     <div key={person.id} className="rounded-2xl border border-blue-100 p-4">
-                      <p className="font-bold">{person.name}</p>
-                      <p className="text-xs text-blue-600">{person.hoursPerDay} hrs/day</p>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold">{person.name}</p>
+                          <p className="text-xs text-blue-600">{person.hoursPerDay} hrs/day · Active</p>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-2">
+                          <Field label="Clocking PIN"><TextInput type="password" maxLength={4} value={getStaffPin(person)} onChange={(event) => updateStaffPin(person.id, event.target.value)} /></Field>
+                          <button className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => deactivateStaffMember(person.id)}>Deactivate</button>
+                        </div>
+                      </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         {stages.filter((stage) => stage !== "Complete").map((stage) => (
                           <label key={`${person.id}-${stage}`} className="grid grid-cols-[auto_1fr_72px] items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold">
@@ -7194,6 +7673,18 @@ export default function FabricationProductionPlannerIntegrated() {
                       </div>
                     </div>
                   ))}
+                  {staff.some((person) => !isStaffActive(person)) ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="font-bold">Inactive staff</h3>
+                    <p className="mt-1 text-xs text-slate-600">Inactive staff are hidden from future allocation and staff clocking, but historic records stay linked.</p>
+                    <div className="mt-3 space-y-2">
+                      {staff.filter((person) => !isStaffActive(person)).map((person) => (
+                        <div key={person.id} className="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                          <span>{person.name}</span>
+                          <button className="rounded-lg border bg-white px-3 py-1 text-xs font-bold" onClick={() => reactivateStaffMember(person.id)}>Reactivate</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div> : null}
                 </div>
 
                 <div className="mt-5 rounded-2xl bg-blue-50 p-4">
@@ -7206,7 +7697,10 @@ export default function FabricationProductionPlannerIntegrated() {
                   </div>
                   {addStaffOpen ? <div className="mt-3 grid gap-2">
                     <TextInput placeholder="Staff name" value={newStaff.name} onChange={(event) => setNewStaff({ ...newStaff, name: event.target.value })} />
-                    <Field label="Hours per day"><TextInput type="number" value={newStaff.hoursPerDay} onChange={(event) => setNewStaff({ ...newStaff, hoursPerDay: event.target.value })} /></Field>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Hours per day"><TextInput type="number" value={newStaff.hoursPerDay} onChange={(event) => setNewStaff({ ...newStaff, hoursPerDay: event.target.value })} /></Field>
+                      <Field label="Clocking PIN"><TextInput type="password" inputMode="numeric" maxLength={4} placeholder="4 digit PIN" value={newStaff.pin} onChange={(event) => setNewStaff({ ...newStaff, pin: String(event.target.value || "").replace(/[^0-9]/g, "").slice(0, 4) })} /></Field>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       {stages.filter((stage) => stage !== "Complete").map((stage) => (
                         <label key={`new-${stage}`} className="grid grid-cols-[auto_1fr_72px] items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold">
