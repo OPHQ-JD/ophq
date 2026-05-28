@@ -542,25 +542,18 @@ function createStockSegmentsForFixedLine(item = {}, status = "Available") {
 }
 
 function scrapStockSegment(stockItems = [], { stockItemId = "", segmentId = "", reason = "Scrapped offcut" }) {
-  if (!stockItemId || !segmentId) return stockItems;
-  return stockItems.map((item) => {
-    if (item.id !== stockItemId) return item;
-    const segments = getStockSegments(item).map((segment) => {
-      if (segment.id !== segmentId) return segment;
-      return {
-        ...segment,
-        availableLengthM: 0,
-        status: "Consumed",
-        scrapReason: reason || "Scrapped offcut",
-        scrappedAt: new Date().toISOString(),
-      };
-    });
-    return {
+  if (!stockItemId) return stockItems;
+  return stockItems.flatMap((item) => {
+    if (item.id !== stockItemId) return [item];
+    const remainingSegments = getStockSegments(item).filter((segment) => segment.id !== segmentId);
+    if (!remainingSegments.length) return [];
+    return [{
       ...item,
-      lengthSegments: segments,
-      quantity: segments.filter((segment) => segment.status !== "Consumed").length,
+      lengthSegments: remainingSegments,
+      quantity: remainingSegments.length,
+      length: Number(remainingSegments[0]?.availableLengthM || item.length || 0),
       notes: [item.notes, `${reason || "Scrapped offcut"} removed from available stock.`].filter(Boolean).join(" | "),
-    };
+    }];
   });
 }
 
@@ -664,7 +657,7 @@ function createStockLinesFromPoLine(line = {}, po = {}, status = "On Order") {
       ...common,
       id: createEntityId("stock-offcut"),
       length: offcutLengthM,
-      status: status === "On Order" ? "On Order" : "Offcut",
+      status: "Offcut",
       stockLineType: "Offcut",
       allocatedJobId: "",
       sourceOrderedLengthM: orderedLengthM,
@@ -2773,18 +2766,35 @@ const initialCompanySettings = {
 };
 
 const xeroCsvHeaders = [
+  "*ContactName",
+  "ContactName",
   "Contact Name",
+  "EmailAddress",
   "Email Address",
+  "PhoneNumber",
   "Phone Number",
+  "MobileNumber",
   "Mobile Number",
-  "Postal Address Line 1",
-  "Postal Address Line 2",
-  "Postal Address City",
-  "Postal Address Region",
-  "Postal Address Postal Code",
-  "Postal Address Country",
-  "Tax Number",
+  "AccountNumber",
   "Account Number",
+  "TaxNumber",
+  "Tax Number",
+  "POAddressLine1",
+  "POAddressLine2",
+  "POAddressLine3",
+  "POAddressLine4",
+  "POCity",
+  "PORegion",
+  "POPostalCode",
+  "POCountry",
+  "SAAddressLine1",
+  "SAAddressLine2",
+  "SAAddressLine3",
+  "SAAddressLine4",
+  "SACity",
+  "SARegion",
+  "SAPostalCode",
+  "SACountry",
 ];
 
 const maxCsvImportFileSizeBytes = 2 * 1024 * 1024;
@@ -3786,7 +3796,7 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
                         {segment.scrapReason ? <p className="mt-1 rounded bg-red-50 px-2 py-1 font-bold text-red-700">Scrapped: {segment.scrapReason}</p> : null}
                         {allocationRows.length ? <div className="mt-1 space-y-1">{allocationRows.map((allocation) => <p key={allocation.id} className="rounded bg-white px-2 py-1 font-bold text-blue-950">Allocated {formatLengthM(allocation.lengthM)} to {allocation.jobNo}{allocation.jobTitle ? ` · ${allocation.jobTitle}` : ""}</p>)}</div> : <p className="mt-1 font-semibold text-emerald-700">No job allocation yet</p>}
                         {item.stockLineType === "Allocated" || item.stockLineType === "Allocated Cut" ? <button className="mt-2 rounded-lg border border-emerald-200 bg-white px-2 py-1 text-[11px] font-black text-emerald-700" onClick={() => onCutAllocatedStockItem(item.id)}>Cut / consume allocated line</button> : null}
-                        {(item.stockLineType === "Offcut" || segment.status === "Offcut") && segment.status !== "Consumed" && Number(segment.availableLengthM || 0) > 0 ? <div className="mt-2 flex flex-wrap gap-2"><button className="rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-black text-blue-700" onClick={() => onManualCutOffcutStockItem(item.id)}>Manual cut</button><button className="rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-black text-red-700" onClick={() => onScrapStockSegment(item.id, segment.id)}>Scrap offcut</button></div> : null}
+                        {!(item.stockLineType === "Allocated" || item.stockLineType === "Allocated Cut") && !["Consumed", "Scrapped"].includes(segment.status) && Number(segment.availableLengthM || 0) > 0 ? <div className="mt-2 flex flex-wrap gap-2"><button className="rounded-lg border border-blue-200 bg-white px-2 py-1 text-[11px] font-black text-blue-700" onClick={() => onManualCutOffcutStockItem(item.id)}>Manual cut</button><button className="rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-black text-red-700" onClick={() => onScrapStockSegment(item.id, segment.id)}>Scrap</button></div> : null}
                       </div>
                     );
                   })}</div></td>
@@ -3851,29 +3861,60 @@ function parseCsvText(text) {
   return rows.slice(1).map((cells) => headers.reduce((record, header, index) => ({ ...record, [header]: cells[index] || "" }), {}));
 }
 
+function getCsvValue(row = {}, keys = []) {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && String(value || "").trim() !== "") return String(value).trim();
+  }
+  const normalisedMap = Object.keys(row).reduce((map, key) => ({ ...map, [String(key).replace(/[^a-z0-9]/gi, "").toLowerCase()]: row[key] }), {});
+  for (const key of keys) {
+    const value = normalisedMap[String(key).replace(/[^a-z0-9]/gi, "").toLowerCase()];
+    if (value !== undefined && String(value || "").trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
 function normaliseXeroCsvRow(row, type) {
-  const address = [
-    row["Postal Address Line 1"],
-    row["Postal Address Line 2"],
-    row["Postal Address City"],
-    row["Postal Address Region"],
-    row["Postal Address Postal Code"],
-    row["Postal Address Country"],
+  const name = getCsvValue(row, ["*ContactName", "ContactName", "Contact Name", "LegalName", "BankAccountName"]);
+  const email = getCsvValue(row, ["EmailAddress", "Email Address", "Email"]);
+  const phone = getCsvValue(row, ["PhoneNumber", "Phone Number", "DDINumber", "DDI Number"]);
+  const mobile = getCsvValue(row, ["MobileNumber", "Mobile Number"]);
+  const taxNumber = getCsvValue(row, ["TaxNumber", "Tax Number"]);
+  const accountReference = getCsvValue(row, ["AccountNumber", "Account Number"]);
+  const supplierAddress = [
+    getCsvValue(row, ["POAddressLine1", "Postal Address Line 1"]),
+    getCsvValue(row, ["POAddressLine2", "Postal Address Line 2"]),
+    getCsvValue(row, ["POAddressLine3"]),
+    getCsvValue(row, ["POAddressLine4"]),
+    getCsvValue(row, ["POCity", "Postal Address City"]),
+    getCsvValue(row, ["PORegion", "Postal Address Region"]),
+    getCsvValue(row, ["POPostalCode", "Postal Address Postal Code"]),
+    getCsvValue(row, ["POCountry", "Postal Address Country"]),
   ].filter(Boolean).join(", ");
-  const name = row["Contact Name"] || "";
+  const customerAddress = [
+    getCsvValue(row, ["SAAddressLine1", "Delivery Address Line 1"]),
+    getCsvValue(row, ["SAAddressLine2", "Delivery Address Line 2"]),
+    getCsvValue(row, ["SAAddressLine3"]),
+    getCsvValue(row, ["SAAddressLine4"]),
+    getCsvValue(row, ["SACity", "Delivery Address City"]),
+    getCsvValue(row, ["SARegion", "Delivery Address Region"]),
+    getCsvValue(row, ["SAPostalCode", "Delivery Address Postal Code"]),
+    getCsvValue(row, ["SACountry", "Delivery Address Country"]),
+  ].filter(Boolean).join(", ");
+  const address = type === "suppliers" ? supplierAddress || customerAddress : customerAddress || supplierAddress;
 
   if (type === "suppliers") {
     return {
       name,
       company: name,
       contact: name,
-      email: row["Email Address"] || "",
-      phone: row["Phone Number"] || "",
-      mobile: row["Mobile Number"] || "",
+      email,
+      phone,
+      mobile,
       deliveryAddress: address,
       address,
-      vatNumber: row["Tax Number"] || "",
-      accountReference: row["Account Number"] || "",
+      vatNumber: taxNumber,
+      accountReference,
     };
   }
 
@@ -3881,13 +3922,13 @@ function normaliseXeroCsvRow(row, type) {
     company: name,
     name,
     contact: name,
-    email: row["Email Address"] || "",
-    phone: row["Phone Number"] || "",
-    mobile: row["Mobile Number"] || "",
+    email,
+    phone,
+    mobile,
     deliveryAddress: address,
     address,
-    vatNumber: row["Tax Number"] || "",
-    accountReference: row["Account Number"] || "",
+    vatNumber: taxNumber,
+    accountReference,
   };
 }
 
@@ -6516,8 +6557,15 @@ export default function FabricationProductionPlannerIntegrated() {
   }
 
   function addStockItem() {
-    if (!newStockItem.sectionSize.trim()) return;
-    const baseStockItem = { ...newStockItem, id: createEntityId("stock"), quantity: Number(newStockItem.quantity || 0), length: Number(newStockItem.length || 0) };
+    const productId = newStockItem.productId || "ub";
+    const sectionSize = String(newStockItem.sectionSize || getSectionOptions(productId, customProducts)[0] || "").trim();
+    const length = normaliseLengthM(newStockItem.length) || Number(newStockItem.length || 0);
+    const quantity = Math.max(1, Number(newStockItem.quantity || 1));
+    if (!sectionSize || !length) {
+      setAutomationStatus("Stock item not added: choose a section/size and enter a length.");
+      return;
+    }
+    const baseStockItem = { ...newStockItem, id: createEntityId("stock"), productId, sectionSize, quantity, length, status: newStockItem.status || "In Stock" };
     const created = actionService.createRecord({
       resource: "stock_items",
       record: { ...baseStockItem, lengthSegments: createLengthSegmentsForStockItem(baseStockItem) },
@@ -6525,6 +6573,7 @@ export default function FabricationProductionPlannerIntegrated() {
       notes: "Stock item created through live-ready action service.",
     });
     if (!created) return;
+    setAutomationStatus(`Stock item added: ${sectionSize} x ${quantity} at ${formatLengthM(length)}.`);
     setNewStockItem({ productId: "ub", sectionSize: "", grade: "S355", finish: "Self colour", length: 6, width: "", quantity: 1, location: "", status: "In Stock", allocatedJobId: "", purchaseDocumentNo: "", notes: "" });
   }
 
@@ -6540,6 +6589,7 @@ export default function FabricationProductionPlannerIntegrated() {
     if (!actionService.guard("canUpdate", "stock_items", "Stock offcut scrapped/removed from available inventory.")) return;
     const reason = typeof window !== "undefined" ? window.prompt("Reason for scrapping/removing this offcut?", "Scrapped offcut") : "Scrapped offcut";
     setStockItems((current) => scrapStockSegment(current, { stockItemId, segmentId, reason: reason || "Scrapped offcut" }));
+    setAutomationStatus("Stock line removed from inventory as scrap.");
   }
 
   function cutAllocatedStockItem(stockItemId) {
@@ -6571,7 +6621,12 @@ export default function FabricationProductionPlannerIntegrated() {
       });
     }
     if (po && status === "Received") {
-      setStockItems((current) => current.map((item) => item.purchaseDocumentId === po.id ? { ...item, status: "In Stock", location: item.location === "On order" ? "Goods in" : item.location, lengthSegments: getStockSegments(item).map((segment) => ({ ...segment, sourceStatus: "In Stock" })) } : item));
+      setStockItems((current) => current.map((item) => item.purchaseDocumentId === po.id ? {
+        ...item,
+        status: item.stockLineType === "Offcut" ? "Offcut" : "In Stock",
+        location: item.location === "On order" ? "Goods in" : item.location,
+        lengthSegments: getStockSegments(item).map((segment) => ({ ...segment, status: item.stockLineType === "Offcut" ? "Offcut" : segment.status, sourceStatus: item.stockLineType === "Offcut" ? "Offcut" : "In Stock" }))
+      } : item));
       updateJob(po.jobId, { status: "In Production" });
     }
   }
