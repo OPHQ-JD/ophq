@@ -12,3 +12,5 @@
 - 2026-05-28: [bug fix + stock/inventory logic] Repaired PO raise stock creation and existing-stock allocation persistence; available stock now includes offcuts/available rows, self-colour stock can allocate to finished jobs, and quote/job parts preserve required cut length for allocation. Pricing impact: none. Tests: build passed; PO stock creation and job allocation paths reviewed.
 
 - 2026-05-28: [bug fix + stock/inventory logic] Repaired Raise PO button path so enquiry-to-PO conversion always updates purchase record status, refreshes stock inventory lines for the PO, and shows success/failure status. Pricing impact: none. Tests: raise PO, PO stock line creation, stock inventory persistence.
+
+- 2026-05-28: [bug fix + stock/inventory logic + integration] Fixed manual stock add, made manual cut/scrap available on stock/offcut rows, removed scrapped lines from inventory, auto-set PO offcuts as Offcut, and mapped Xero Contacts CSV headers for customer/supplier import. Pricing impact: none. Tests: stock add, manual cut, scrap, PO offcut availability, Xero import preview.
