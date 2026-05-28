@@ -577,8 +577,9 @@ function getRemainingLengthForStockItem(item = {}) {
 }
 
 function getStockAvailableLengthByStatus(stockItems = [], part = {}, status = "In Stock", jobId = "") {
+  const statusList = Array.isArray(status) ? status : [status];
   return (stockItems || [])
-    .filter((item) => stockMatchesPart(item, part) && item.status === status)
+    .filter((item) => stockMatchesPart(item, part) && statusList.includes(item.status))
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
     .filter(({ segment }) => !segment.allocatedJobId || segment.allocatedJobId === jobId)
@@ -590,8 +591,9 @@ function getRequiredLengthForPart(part = {}) {
 }
 
 function findBestStockSegmentForLength(stockItems = [], part = {}, requiredLengthM = 0, preferredStatus = "In Stock", jobId = "") {
+  const preferredStatuses = Array.isArray(preferredStatus) ? preferredStatus : [preferredStatus];
   const candidates = (stockItems || [])
-    .filter((item) => stockMatchesPart(item, part) && item.status === preferredStatus)
+    .filter((item) => stockMatchesPart(item, part) && preferredStatuses.includes(item.status))
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
     .filter(({ segment }) => !segment.allocatedJobId || segment.allocatedJobId === jobId)
@@ -3558,26 +3560,32 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
 
 function getJobPartsList(job, quote) {
   const sourceItems = quote?.takeoffLines?.length ? quote.takeoffLines : quote?.items?.length ? quote.items : job.partsList || [];
-  return sourceItems.map((item, index) => ({
-    id: item.id || `job-part-${job.id}-${index}`,
-    productId: item.productId || "",
-    description: item.description || item.productName || item.title || "Quote item",
-    sectionSize: item.sectionSize || item.size || "",
-    grade: item.grade || "",
-    finish: item.finish || "",
-    length: Number(item.length || 0),
-    width: Number(item.width || 0),
-    quantity: Number(item.quantity || 1),
-    weightKg: Number(item.weightKg || 0),
-    notes: item.notes || "",
-  }));
+  return sourceItems.map((item, index) => {
+    const rawLength = item.requiredCutLength || item.cutLength || item.jobLength || item.lengthM || item.length || item.sizeLength || item.itemLength || 0;
+    return {
+      id: item.id || `job-part-${job.id}-${index}`,
+      productId: item.productId || "",
+      description: item.description || item.productName || item.title || "Quote item",
+      sectionSize: item.sectionSize || item.size || "",
+      grade: item.grade || "",
+      finish: item.finish || "",
+      length: normaliseLengthM(rawLength) || Number(rawLength || 0),
+      requiredCutLength: item.requiredCutLength || item.cutLength || item.jobLength || rawLength,
+      width: Number(item.width || 0),
+      quantity: Number(item.quantity || 1),
+      weightKg: Number(item.weightKg || 0),
+      notes: item.notes || "",
+    };
+  });
 }
 
 function stockMatchesPart(stockItem, part) {
   const sameProduct = !part.productId || stockItem.productId === part.productId;
   const sameSection = !part.sectionSize || String(stockItem.sectionSize || "").toLowerCase() === String(part.sectionSize || "").toLowerCase();
   const sameGrade = !part.grade || String(stockItem.grade || "").toLowerCase() === String(part.grade || "").toLowerCase();
-  const sameFinish = !part.finish || String(stockItem.finish || "").toLowerCase() === String(part.finish || "").toLowerCase();
+  const stockFinish = String(stockItem.finish || "Self colour").toLowerCase();
+  const partFinish = String(part.finish || "Self colour").toLowerCase();
+  const sameFinish = !part.finish || stockFinish === partFinish || stockFinish === "self colour" || partFinish === "self colour";
   return sameProduct && sameSection && sameGrade && sameFinish;
 }
 
@@ -3586,20 +3594,21 @@ function getStockStatusForPart(part, stockItems, jobId) {
   const requiredLengthM = getRequiredLengthForPart(part);
   const hasLengthRequirement = Number(part.length || 0) > 0;
   const allocatedToJob = matches.filter((item) => item.allocatedJobId === jobId);
-  const available = matches.filter((item) => item.status === "In Stock" && !item.allocatedJobId);
+  const availableStatuses = ["In Stock", "Offcut", "Available"];
+  const available = matches.filter((item) => availableStatuses.includes(item.status) && !item.allocatedJobId);
   const onOrder = matches.filter((item) => item.status === "On Order");
   const availableQuantity = available.reduce((sum, item) => sum + Number(item.quantity || getStockSegments(item).length || 0), 0);
   const allocatedQuantity = allocatedToJob.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const onOrderQuantity = onOrder.reduce((sum, item) => sum + Number(item.quantity || getStockSegments(item).length || 0), 0);
   const requiredQuantity = Number(part.quantity || 0);
-  const availableLengthM = getStockAvailableLengthByStatus(stockItems, part, "In Stock", jobId);
+  const availableLengthM = getStockAvailableLengthByStatus(stockItems, part, availableStatuses, jobId);
   const onOrderLengthM = getStockAvailableLengthByStatus(stockItems, part, "On Order", jobId);
   const allocatedLengthM = matches
     .flatMap((item) => getStockSegments(item))
     .flatMap((segment) => segment.allocations || [])
     .filter((allocation) => allocation.jobId === jobId)
     .reduce((sum, allocation) => sum + Number(allocation.lengthM || 0), 0);
-  const bestInStock = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, Number(part.length || 0), "In Stock", jobId) : null;
+  const bestInStock = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, Number(part.length || 0), availableStatuses, jobId) : null;
   const bestOnOrder = hasLengthRequirement ? findBestStockSegmentForLength(stockItems, part, Number(part.length || 0), "On Order", jobId) : null;
 
   if (hasLengthRequirement) {
@@ -6417,7 +6426,7 @@ export default function FabricationProductionPlannerIntegrated() {
 
     const createdJob = actionService.createRecord({ resource: "jobs", record: job, setter: setJobs, notes: "Quote package converted to job." });
     if (!createdJob) return;
-    if (stockAfterExistingAllocations !== stockItems) setStockItems(stockAfterExistingAllocations);
+    setStockItems(() => stockAfterExistingAllocations);
     if (suggestedPo) actionService.createRecord({ resource: "purchase_enquiries", record: suggestedPo, setter: setPurchaseOrders, notes: "Supplier enquiry created from missing job materials." });
     setSelectedJobId(job.id);
     actionService.updateRecord({ resource: "quotes", id: quotePackage.quoteId, patch: { status: "Converted" }, setter: setQuotes, notes: "Quote status updated after job conversion." });
@@ -6496,7 +6505,12 @@ export default function FabricationProductionPlannerIntegrated() {
     const created = actionService.createRecord({ resource: "purchase_orders", record: po, setter: setPurchaseOrders, notes: "Purchase order raised against job." });
     if (!created) return;
     const onOrderItems = createStockItemsFromPurchasingDocument(po, "On Order");
-    if (onOrderItems.length) setStockItems((current) => [...onOrderItems, ...current]);
+    if (onOrderItems.length) {
+      setStockItems((current) => [...onOrderItems, ...current]);
+      setAutomationStatus(`${po.poNo} raised and ${onOrderItems.length} stock line(s) added to inventory.`);
+    } else {
+      setAutomationStatus(`${po.poNo} raised, but no stock lines were added. Check each PO line has product, section and ordered length.`);
+    }
     updateJob(job.id, { status: "Waiting Material", materialsDue: newPo.requiredBy });
     setNewPo({ ...newPo, lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: "", finish: "Self colour" }, 1, 1, customProducts)] });
   }
