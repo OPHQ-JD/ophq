@@ -7305,46 +7305,23 @@ export default function FabricationProductionPlannerIntegrated() {
 
         <LaunchModeBanner cloudSyncStatus={cloudSyncStatus} />
 
-        {activeTab === "stock" ? (
-          <div className="sticky top-0 z-30 rounded-2xl border border-blue-100 bg-white/95 p-2 shadow-sm backdrop-blur">
-            <div className="flex gap-2 overflow-x-auto whitespace-nowrap pb-1">
-              {visibleMainTabs.map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => requestProtectedTab(key)}
-                  className={`rounded-xl px-4 py-2 text-sm font-black transition ${activeTab === key ? "bg-blue-700 text-white" : key === "holiday" && pendingHolidayRequests ? "bg-red-100 text-red-800 hover:bg-red-50" : "bg-blue-50 text-blue-900 hover:bg-blue-100"}`}
-                >
-                  {key === "jobs" && activeRole !== "operations" ? `🔒 ${label}` : label}
-                  {key === "holiday" && pendingHolidayRequests && activeTab !== key ? " · Pending" : ""}
-                </button>
-              ))}
-            </div>
+        <div className="sticky top-0 z-30 rounded-2xl border border-blue-100 bg-white/95 p-2 shadow-sm backdrop-blur">
+          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1">
+            <span className="shrink-0 rounded-xl bg-blue-950 px-3 py-2 text-xs font-black uppercase tracking-wide text-white">{activeRole}</span>
+            {visibleMainTabs.map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => requestProtectedTab(key)}
+                className={`rounded-xl px-4 py-2 text-sm font-black transition ${activeTab === key ? "bg-blue-700 text-white" : key === "holiday" && pendingHolidayRequests ? "bg-red-100 text-red-800 hover:bg-red-50" : "bg-blue-50 text-blue-900 hover:bg-blue-100"}`}
+              >
+                {key === "jobs" && activeRole !== "operations" ? `🔒 ${label}` : label}
+                {key === "holiday" && pendingHolidayRequests && activeTab !== key ? " · Pending" : ""}
+              </button>
+            ))}
           </div>
-        ) : null}
+        </div>
 
-        <div className={`grid gap-5 ${activeTab === "stock" ? "lg:grid-cols-1" : "lg:grid-cols-[260px_1fr]"}`}>
-          {activeTab !== "stock" ? (
-            <aside className="lg:sticky lg:top-4 lg:self-start">
-              <div className="rounded-3xl border border-blue-100 bg-white p-4 shadow-sm">
-                <p className="px-2 text-xs font-black uppercase tracking-[0.18em] text-blue-400">Navigation</p>
-                <p className="mt-1 px-2 text-sm font-bold text-blue-950">{activeRole.charAt(0).toUpperCase() + activeRole.slice(1)}</p>
-                <div className="mt-4 space-y-1">
-                  {visibleMainTabs.map(([key, label]) => (
-                    <button
-                      key={key}
-                      onClick={() => requestProtectedTab(key)}
-                      className={`flex w-full items-center justify-between rounded-xl px-3 py-3 text-left text-sm font-bold transition ${activeTab === key ? "bg-blue-700 text-white" : key === "holiday" && pendingHolidayRequests ? "bg-red-100 text-red-800 hover:bg-red-50" : "text-blue-900 hover:bg-blue-50"}`}
-                    >
-                      <span>{key === "jobs" && activeRole !== "operations" ? `🔒 ${label}` : label}</span>
-                      {key === "holiday" && pendingHolidayRequests && activeTab !== key ? <span className="rounded-full bg-red-600 px-2 py-1 text-[10px] font-black text-white">Pending</span> : null}
-                      {activeTab === key ? <span className="text-xs text-blue-200">Active</span> : null}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </aside>
-          ) : null}
-
+        <div className="grid gap-5 lg:grid-cols-1">
           <main className="min-w-0 space-y-5">
 
         {securedTab ? (
