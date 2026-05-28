@@ -6589,19 +6589,61 @@ export default function FabricationProductionPlannerIntegrated() {
 
   function raisePoFromEnquiry(poId) {
     const enquiry = purchaseOrders.find((item) => item.id === poId);
-    if (!enquiry) return;
+    if (!enquiry) {
+      setAutomationStatus("Could not raise PO: enquiry record was not found.");
+      return;
+    }
+
+    const validItems = (enquiry.items || [])
+      .map((item, index) => normalisePoLine(item, index))
+      .filter((item) => item.productId && item.sectionSize);
+
+    if (!validItems.length) {
+      setAutomationStatus(`${getPurchasingDocumentNumber(enquiry)} cannot be raised to PO because it has no valid material lines.`);
+      return;
+    }
+
+    const items = validItems.map((item, index) => ({
+      ...item,
+      id: item.id || `poi-${Date.now()}-${index}`,
+      description: buildPoLineDescription(item, productDatabase),
+      quantity: Number(item.quantity || 1),
+      unitCost: Number(item.unitCost || 0),
+    }));
+
     const reservedPoNumber = reserveDocumentNumberSync({ documentType: "purchaseOrder", records: purchaseOrders, linkedSourceNumber: "" });
-    const totals = calculatePoTotals(enquiry.items || [], Number(enquiry.vatRate || 20));
-    const raisedPo = { ...enquiry, ...totals, documentKind: "Purchase Order", poNo: reservedPoNumber.number, status: "Draft PO", raisedFromEnquiryNo: enquiry.enquiryNo || "" };
-    actionService.updateRecord({
+    const totals = calculatePoTotals(items, Number(enquiry.vatRate || 20));
+    const raisedPo = {
+      ...enquiry,
+      ...totals,
+      items,
+      documentKind: "Purchase Order",
+      poNo: reservedPoNumber.number,
+      status: "Draft PO",
+      raisedFromEnquiryNo: enquiry.enquiryNo || "",
+    };
+
+    const onOrderItems = createStockItemsFromPurchasingDocument(raisedPo, "On Order");
+
+    const updated = actionService.updateRecord({
       resource: "purchase_orders",
       id: poId,
       patch: raisedPo,
       setter: setPurchaseOrders,
       notes: "Supplier enquiry converted to formal purchase order.",
     });
-    const onOrderItems = createStockItemsFromPurchasingDocument(raisedPo, "On Order");
-    if (onOrderItems.length) setStockItems((current) => current.some((item) => item.purchaseDocumentId === raisedPo.id) ? current : [...onOrderItems, ...current]);
+
+    if (!updated) {
+      setAutomationStatus(`Could not raise ${getPurchasingDocumentNumber(enquiry)} to PO. Check operations permissions.`);
+      return;
+    }
+
+    setStockItems((current) => {
+      const withoutExistingForPo = current.filter((item) => item.purchaseDocumentId !== raisedPo.id);
+      return onOrderItems.length ? [...onOrderItems, ...withoutExistingForPo] : withoutExistingForPo;
+    });
+
+    setAutomationStatus(`${getPurchasingDocumentNumber(enquiry)} raised to ${raisedPo.poNo}. ${onOrderItems.length ? `${onOrderItems.length} stock line(s) added to inventory.` : "No stock lines added - check ordered length and allocated cut fields."}`);
   }
 
   function startEditPurchaseOrder(po) {
@@ -7467,9 +7509,9 @@ export default function FabricationProductionPlannerIntegrated() {
                             <SelectInput value={po.status} onChange={(event) => updatePOStatus(po.id, event.target.value)}>{poStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput>
                             <button disabled={po.status === "Sent" || po.status === "Received" || po.status === "Cancelled"} className="rounded-xl border bg-white px-4 py-2 text-sm font-bold disabled:opacity-40" onClick={() => startEditPurchaseOrder(po)}>Edit {isEnquiryDocument(po) ? "Enquiry" : "PO"}</button>
                             <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => printPurchaseOrderPdf({ po, job, supplier, companySettings, onRegisterDocument: registerGeneratedDocument })}>Print / Save {isEnquiryDocument(po) ? "Enquiry" : "PO"} PDF</button>
-                            {isEnquiryDocument(po) ? <button disabled={po.status === "Enquiry Sent" || po.status === "Supplier Quote Received" || po.status === "Cancelled"} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => sendPurchaseOrder(po.id)}>Send Enquiry</button> : <button disabled={po.status === "Sent" || po.status === "Received" || po.status === "Cancelled"} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => sendPurchaseOrder(po.id)}>Send PO</button>}
-                            {isEnquiryDocument(po) ? <button disabled={po.status === "Supplier Quote Received" || po.status === "Cancelled"} className="rounded-xl border bg-white px-4 py-2 text-sm font-bold disabled:opacity-40" onClick={() => markSupplierQuoteReceived(po.id)}>Quote received</button> : null}
-                            {isEnquiryDocument(po) ? <button disabled={po.status !== "Supplier Quote Received"} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => raisePoFromEnquiry(po.id)}>Raise PO</button> : null}
+                            {isEnquiryDocument(po) ? <button disabled={po.status === "Enquiry Sent" || po.status === "Supplier Quote Received" || po.status === "Cancelled"} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => sendPurchaseOrder(po.id)}>Send Enquiry</button> : <button type="button" disabled={po.status === "Sent" || po.status === "Received" || po.status === "Cancelled"} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => sendPurchaseOrder(po.id)}>Send PO</button>}
+                            {isEnquiryDocument(po) ? <button type="button" disabled={po.status === "Supplier Quote Received" || po.status === "Cancelled"} className="rounded-xl border bg-white px-4 py-2 text-sm font-bold disabled:opacity-40" onClick={() => markSupplierQuoteReceived(po.id)}>Quote received</button> : null}
+                            {isEnquiryDocument(po) ? <button type="button" disabled={po.status === "Cancelled"} title={po.status === "Supplier Quote Received" ? "Raise formal PO and add ordered material to stock" : "Raise formal PO from this enquiry"} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={(event) => { event.preventDefault(); event.stopPropagation(); raisePoFromEnquiry(po.id); }}>Raise PO</button> : null}
                           </div>
                         </div> : null}
                       </>
