@@ -1,10 +1,12 @@
-# Changelog
-
-- 2026-05-27: [UI/layout + file handling] Fixed delivery note print/PDF output to use a clean A4 document print window, matching quote/PO/job sheet behaviour instead of printing the full app screen. Pricing impact: none. Tests: npm run build; manual delivery note print/PDF and quote/PO regression recommended.
-- 2026-05-27: [planner workflow + bug fix] Restored clocking period to 26th-25th while keeping Mon-Fri-only standard-hours allowance and counting weekend clocked hours toward the period threshold. Pricing impact: none. Tests: clocking period boundary, weekend hours, overtime threshold.
-- 2026-05-27: [database/schema + planner workflow + authentication/user role] Added operations-only sick day absence recording and fed sick absences into staff timesheets within the 26th-25th clocking period. Pricing impact: none. Tests: Vite build, operations-only UI path, sick day timesheet rows, overtime threshold with absence hours.
-- 2026-05-27: [database/schema + authentication/user role + UI/layout] Added staff clocking PIN setup on add/edit staff and deactivated staff workflow preserving historic records. Pricing impact: none. Tests: build, add staff PIN validation, deactivate/reactivate UI, active staff filtering for future allocation.
-- 2026-05-27: [database/schema + UI/layout] Added hit/miss weld detail fields for top and bottom plate quote lines. Pricing impact: none. Tests: add top plate weld detail, add bottom plate weld detail, save/reload quote, quote/PDF detail display, quote total unchanged.
-- 2026-05-27: [pricing logic + database/schema + UI/layout] Added separate per-tonne finish pricing rows and changed quote finish costing to selected finish weight tonnes x finish £/tonne. Pricing impact: confirmed. Tests: 200kg at £100/t finish cost = £20; production build passed.
-- 2026-05-27: [UI/layout + file handling] Tidied job sheet workshop operations print table with clearer columns, traceability rows, and cleaner print spacing. Pricing impact: none. Tests: job sheet print/PDF visual regression.
-- 2026-05-27: [database/schema + stock/inventory logic + planner workflow + UI/layout] Updated purchasing/stock flow so enquiries do not create inventory, raised POs create allocated stock and offcut stock lines, allocated lines can be cut/consumed, and offcuts can be manually cut or scrapped. Pricing impact: possible stock valuation only; quote pricing unchanged. Tests: Vite build, enquiry no-stock test, PO allocated/offcut line test, manual offcut cut test.
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OPHQ</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
