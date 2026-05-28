@@ -3770,22 +3770,29 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
         </div> : null}
       </div>
 
-      <div className="overflow-x-auto rounded-3xl bg-white p-5 shadow-sm">
-        <table className="w-full min-w-[1450px] table-fixed border-collapse text-sm">
+      <div className="rounded-3xl bg-white p-5 shadow-sm">
+        <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h3 className="text-lg font-bold">Inventory list</h3>
+            <p className="text-sm text-blue-800">Full-width stock register. Material identity fields are locked once the line is created.</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1200px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600">
-              <th className="py-3 pr-3">Product</th>
-              <th className="w-72 py-3 pr-3">Section / Size</th>
-              <th className="py-3 pr-3">Grade</th>
-              <th className="py-3 pr-3">Finish</th>
-              <th className="py-3 pr-3 text-right">Length</th>
-              <th className="py-3 pr-3 text-right">Qty</th>
-              <th className="py-3 pr-3">Location</th>
-              <th className="py-3 pr-3">Status</th>
-              <th className="py-3 pr-3">PO / Enquiry</th>
-              <th className="py-3 pr-3">Allocated / remaining</th>
-              <th className="py-3 pr-3">Manual job hold</th>
-              <th className="py-3 pr-3">Notes</th>
+              <th className="w-28 py-3 pr-3">Product</th>
+              <th className="w-80 py-3 pr-3">Section / Size</th>
+              <th className="w-24 py-3 pr-3">Grade</th>
+              <th className="w-40 py-3 pr-3">Finish</th>
+              <th className="w-28 py-3 pr-3 text-right">Length</th>
+              <th className="w-20 py-3 pr-3 text-right">Qty</th>
+              <th className="w-36 py-3 pr-3">Location</th>
+              <th className="w-36 py-3 pr-3">Status</th>
+              <th className="w-44 py-3 pr-3">PO / Enquiry</th>
+              <th className="w-80 py-3 pr-3">Allocated / remaining</th>
+              <th className="w-48 py-3 pr-3">Manual job hold</th>
+              <th className="w-56 py-3 pr-3">Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -3798,8 +3805,8 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
                   <td className="py-3 pr-3"><div className="min-w-64 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{item.sectionSize || ""}</div></td>
                   <td className="py-3 pr-3"><div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{item.grade || ""}</div></td>
                   <td className="py-3 pr-3"><SelectInput value={item.finish} onChange={(event) => onUpdateStockItem(item.id, { finish: event.target.value })}>{steelFinishOptions.map((finish) => <option key={finish}>{finish}</option>)}</SelectInput></td>
-                  <td className="py-3 pr-3"><TextInput type="number" value={item.length || 0} onChange={(event) => onUpdateStockItem(item.id, { length: event.target.value })} /></td>
-                  <td className="py-3 pr-3"><TextInput type="number" value={item.quantity || 0} onChange={(event) => onUpdateStockItem(item.id, { quantity: event.target.value })} /></td>
+                  <td className="py-3 pr-3 text-right"><div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{formatLengthM(item.length || 0)}</div></td>
+                  <td className="py-3 pr-3 text-right"><div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{item.quantity || 0}</div></td>
                   <td className="py-3 pr-3"><TextInput value={item.location || ""} onChange={(event) => onUpdateStockItem(item.id, { location: event.target.value })} /></td>
                   <td className="py-3 pr-3"><SelectInput value={item.status} onChange={(event) => onUpdateStockItem(item.id, { status: event.target.value })}>{stockStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput></td>
                   <td className="py-3 pr-3"><div className="space-y-1"><TextInput value={item.purchaseDocumentNo || ""} onChange={(event) => onUpdateStockItem(item.id, { purchaseDocumentNo: event.target.value })} placeholder="PO / ENQ" /><p className="text-xs font-bold text-blue-700">Trace: {getStockTraceabilityNumber(item)}</p>{item.sourceJobId ? <p className="text-xs text-blue-600">Source job: {jobs.find((job) => job.id === item.sourceJobId)?.jobNo || item.sourceJobId}</p> : null}</div></td>
@@ -3822,7 +3829,8 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
               );
             })}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -7297,7 +7305,7 @@ export default function FabricationProductionPlannerIntegrated() {
 
         <LaunchModeBanner cloudSyncStatus={cloudSyncStatus} />
 
-        <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
+        <div className={`grid gap-5 ${activeTab === "stock" ? "lg:grid-cols-1" : "lg:grid-cols-[260px_1fr]"}`}>
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <div className="rounded-3xl border border-blue-100 bg-white p-4 shadow-sm">
               <p className="px-2 text-xs font-black uppercase tracking-[0.18em] text-blue-400">Navigation</p>
@@ -7802,7 +7810,7 @@ export default function FabricationProductionPlannerIntegrated() {
                   </div>
                 </div>
               ) : null}
-              <div className="overflow-x-auto">
+              {activeRole === "operations" ? <div className="overflow-x-auto">
                 <div className="min-w-[1100px]">
                   <div className="grid grid-cols-[180px_repeat(10,1fr)] border-b text-xs font-bold text-blue-600">
                     <div className="p-2">Staff</div>
@@ -7837,7 +7845,7 @@ export default function FabricationProductionPlannerIntegrated() {
                     </div>
                   ))}
                 </div>
-              </div>
+              </div> : <div className="rounded-2xl bg-blue-50 p-5 text-sm font-semibold text-blue-800">Staff planner allocation is hidden for staff access. Operations can view and manage the staff calendar.</div>}
             </div>
 
             <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
