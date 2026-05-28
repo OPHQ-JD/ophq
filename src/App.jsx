@@ -2871,6 +2871,22 @@ function SelectInput(props) {
   return <select {...props} className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600" />;
 }
 
+function AutoCompleteInput({ value, onChange, options = [], getLabel = (item) => String(item || ""), getValue = null, placeholder = "Start typing..." }) {
+  const listId = useMemo(() => `autocomplete-${Math.random().toString(36).slice(2)}`, []);
+  return (
+    <>
+      <TextInput value={value || ""} onChange={onChange} list={listId} placeholder={placeholder} />
+      <datalist id={listId}>
+        {options.map((option) => {
+          const label = getLabel(option);
+          const optionValue = getValue ? getValue(option) : label;
+          return <option key={option.id || label} value={optionValue}>{label}</option>;
+        })}
+      </datalist>
+    </>
+  );
+}
+
 function Card({ children, className = "" }) {
   return <div className={`rounded-2xl border border-blue-100 bg-white p-5 shadow-sm ${className}`}>{children}</div>;
 }
@@ -3659,7 +3675,7 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
             <tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600">
               <th className="py-3 pr-3">Part / Material</th>
               <th className="py-3 pr-3">Section</th>
-              <th className="py-3 pr-3">Grade</th>
+              <th className="w-28 py-3 pr-3">Grade</th>
               <th className="py-3 pr-3">Finish</th>
               <th className="py-3 pr-3 text-right">Length</th>
               <th className="py-3 pr-3 text-right">Qty</th>
@@ -3755,11 +3771,11 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
       </div>
 
       <div className="overflow-x-auto rounded-3xl bg-white p-5 shadow-sm">
-        <table className="w-full min-w-[1100px] border-collapse text-sm">
+        <table className="w-full min-w-[1450px] table-fixed border-collapse text-sm">
           <thead>
             <tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600">
               <th className="py-3 pr-3">Product</th>
-              <th className="py-3 pr-3">Section / Size</th>
+              <th className="w-72 py-3 pr-3">Section / Size</th>
               <th className="py-3 pr-3">Grade</th>
               <th className="py-3 pr-3">Finish</th>
               <th className="py-3 pr-3 text-right">Length</th>
@@ -3779,8 +3795,8 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
               return (
                 <tr key={item.id} className="border-b border-blue-100 align-top">
                   <td className="py-3 pr-3 font-bold">{product?.name || item.productId}</td>
-                  <td className="py-3 pr-3"><SelectInput value={item.sectionSize || ""} onChange={(event) => onUpdateStockItem(item.id, { sectionSize: event.target.value })}>{getSectionOptions(item.productId, customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></td>
-                  <td className="py-3 pr-3"><SelectInput value={item.grade} onChange={(event) => onUpdateStockItem(item.id, { grade: event.target.value })}>{steelGradeOptions.map((grade) => <option key={grade}>{grade}</option>)}</SelectInput></td>
+                  <td className="py-3 pr-3"><div className="min-w-64 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{item.sectionSize || ""}</div></td>
+                  <td className="py-3 pr-3"><div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-950">{item.grade || ""}</div></td>
                   <td className="py-3 pr-3"><SelectInput value={item.finish} onChange={(event) => onUpdateStockItem(item.id, { finish: event.target.value })}>{steelFinishOptions.map((finish) => <option key={finish}>{finish}</option>)}</SelectInput></td>
                   <td className="py-3 pr-3"><TextInput type="number" value={item.length || 0} onChange={(event) => onUpdateStockItem(item.id, { length: event.target.value })} /></td>
                   <td className="py-3 pr-3"><TextInput type="number" value={item.quantity || 0} onChange={(event) => onUpdateStockItem(item.id, { quantity: event.target.value })} /></td>
@@ -4640,7 +4656,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       <div className="rounded-3xl bg-white p-5 shadow-sm">
         <h3 className="text-base font-bold">Quote details</h3>
         <div className="mt-4 grid gap-3 md:grid-cols-6">
-          <Field label="Customer"><SelectInput value={quoteMeta.customerId} onChange={(event) => setQuoteMeta({ ...quoteMeta, customerId: event.target.value })}>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.company}</option>)}</SelectInput></Field>
+          <Field label="Customer"><AutoCompleteInput value={customers.find((customer) => customer.id === quoteMeta.customerId)?.company || quoteMeta.customerName || ""} options={customers.filter((customer) => !customer.hidden && customer.status !== "Dormant")} getLabel={(customer) => customer.company} onChange={(event) => { const typed = event.target.value; const match = customers.find((customer) => customer.company === typed); setQuoteMeta({ ...quoteMeta, customerId: match?.id || "", customerName: typed }); }} /></Field>
           <Field label="Quote title"><TextInput value={quoteMeta.title} onChange={(event) => setQuoteMeta({ ...quoteMeta, title: event.target.value })} placeholder="Project / description" /></Field>
           <Field label="Valid until"><TextInput type="date" value={quoteMeta.validUntil} onChange={(event) => setQuoteMeta({ ...quoteMeta, validUntil: event.target.value })} /></Field>
           <Field label="Upload reference file"><input type="file" className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm" onChange={(event) => setQuoteMeta({ ...quoteMeta, uploadedFileName: event.target.files?.[0]?.name || "" })} /></Field>
@@ -4838,7 +4854,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
   );
 }
 
-function CustomersCrmTab({ customers, onAddCustomer, onUpdateCustomer }) {
+function CustomersCrmTab({ customers, suppliers = [], onAddCustomer, onUpdateCustomer, onRemoveCustomer, onRemoveSupplier }) {
   const [newCustomer, setNewCustomer] = useState({ company: "", contact: "", email: "", phone: "", deliveryAddress: "", status: "Lead", notes: "" });
   const [addCustomerOpen, setAddCustomerOpen] = useState(false);
 
@@ -4850,6 +4866,14 @@ function CustomersCrmTab({ customers, onAddCustomer, onUpdateCustomer }) {
 
   function updateCustomer(customerId, patch) {
     onUpdateCustomer(customerId, patch);
+  }
+
+  function removeCustomer(customerId) {
+    if (typeof onRemoveCustomer === "function") onRemoveCustomer(customerId);
+  }
+
+  function removeSupplier(supplierId) {
+    if (typeof onRemoveSupplier === "function") onRemoveSupplier(supplierId);
   }
 
   return (
@@ -4880,10 +4904,10 @@ function CustomersCrmTab({ customers, onAddCustomer, onUpdateCustomer }) {
       </div>
       <div className="overflow-x-auto rounded-3xl bg-white p-5 shadow-sm">
         <table className="w-full min-w-[1000px] border-collapse text-sm">
-          <thead><tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pr-3">Company</th><th className="py-3 pr-3">Contact</th><th className="py-3 pr-3">Status</th><th className="py-3 pr-3">Email</th><th className="py-3 pr-3">Phone</th><th className="py-3 pr-3">Address</th><th className="py-3 pr-3">Notes</th></tr></thead>
+          <thead><tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pr-3">Company</th><th className="py-3 pr-3">Contact</th><th className="py-3 pr-3">Status</th><th className="py-3 pr-3">Email</th><th className="py-3 pr-3">Phone</th><th className="py-3 pr-3">Address</th><th className="py-3 pr-3">Notes</th><th className="py-3 pr-3">Actions</th></tr></thead>
           <tbody>
-            {customers.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={7}>No customers or leads yet. Open Add customer / lead to create the first record.</td></tr> : null}
-            {customers.map((customer) => (
+            {customers.filter((customer) => !customer.hidden).length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={8}>No customers or leads yet. Open Add customer / lead to create the first record.</td></tr> : null}
+            {customers.filter((customer) => !customer.hidden).map((customer) => (
               <tr key={customer.id} className="border-b border-blue-100 align-top">
                 <td className="py-3 pr-3"><TextInput value={customer.company || ""} onChange={(event) => updateCustomer(customer.id, { company: event.target.value })} /></td>
                 <td className="py-3 pr-3"><TextInput value={customer.contact || ""} onChange={(event) => updateCustomer(customer.id, { contact: event.target.value })} /></td>
@@ -4892,6 +4916,26 @@ function CustomersCrmTab({ customers, onAddCustomer, onUpdateCustomer }) {
                 <td className="py-3 pr-3"><TextInput value={customer.phone || ""} onChange={(event) => updateCustomer(customer.id, { phone: event.target.value })} /></td>
                 <td className="py-3 pr-3"><TextInput value={customer.deliveryAddress || ""} onChange={(event) => updateCustomer(customer.id, { deliveryAddress: event.target.value })} /></td>
                 <td className="py-3 pr-3"><TextInput value={customer.notes || ""} onChange={(event) => updateCustomer(customer.id, { notes: event.target.value })} /></td>
+                <td className="py-3 pr-3"><button className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => removeCustomer(customer.id)}>Remove</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="overflow-x-auto rounded-3xl bg-white p-5 shadow-sm">
+        <h3 className="mb-3 text-lg font-bold">Suppliers</h3>
+        <table className="w-full min-w-[760px] border-collapse text-sm">
+          <thead><tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pr-3">Name</th><th className="py-3 pr-3">Contact</th><th className="py-3 pr-3">Email</th><th className="py-3 pr-3">Phone</th><th className="py-3 pr-3">Status</th><th className="py-3 pr-3">Actions</th></tr></thead>
+          <tbody>
+            {suppliers.filter((supplier) => !supplier.hidden).length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={6}>No suppliers imported yet.</td></tr> : null}
+            {suppliers.filter((supplier) => !supplier.hidden).map((supplier) => (
+              <tr key={supplier.id} className="border-b border-blue-100 align-top">
+                <td className="py-3 pr-3 font-bold">{supplier.name}</td>
+                <td className="py-3 pr-3">{supplier.contact || ""}</td>
+                <td className="py-3 pr-3">{supplier.email || ""}</td>
+                <td className="py-3 pr-3">{supplier.phone || ""}</td>
+                <td className="py-3 pr-3">{supplier.status || "Active"}</td>
+                <td className="py-3 pr-3"><button className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => removeSupplier(supplier.id)}>Remove</button></td>
               </tr>
             ))}
           </tbody>
@@ -6074,6 +6118,28 @@ export default function FabricationProductionPlannerIntegrated() {
 
   function updateCustomerRecord(customerId, patch) {
     actionService.updateRecord({ resource: "customers", id: customerId, patch, setter: setCustomers, notes: "Customer record updated." });
+  }
+
+  function removeCustomerRecord(customerId) {
+    const linked = quotes.some((quote) => quote.customerId === customerId) || jobs.some((job) => job.customerId === customerId) || deliveryNotes.some((note) => note.customerId === customerId);
+    if (linked) {
+      actionService.updateRecord({ resource: "customers", id: customerId, patch: { status: "Dormant", hidden: true }, setter: setCustomers, notes: "Linked customer hidden/dormant rather than deleted." });
+      setAutomationStatus("Customer is linked to existing records, so it was marked Dormant/hidden instead of deleted.");
+      return;
+    }
+    setCustomers((current) => current.filter((customer) => customer.id !== customerId));
+    setAutomationStatus("Customer removed from the active list.");
+  }
+
+  function removeSupplierRecord(supplierId) {
+    const linked = purchaseOrders.some((po) => po.supplierId === supplierId);
+    if (linked) {
+      setSuppliers((current) => current.map((supplier) => supplier.id === supplierId ? { ...supplier, status: "Inactive", hidden: true } : supplier));
+      setAutomationStatus("Supplier is linked to purchasing records, so it was marked Inactive/hidden instead of deleted.");
+      return;
+    }
+    setSuppliers((current) => current.filter((supplier) => supplier.id !== supplierId));
+    setAutomationStatus("Supplier removed from the active list.");
   }
 
   function updateJob(jobId, patch) {
@@ -7374,7 +7440,7 @@ export default function FabricationProductionPlannerIntegrated() {
         ) : null}
 
         {activeTab === "customers" ? (
-          <CustomersCrmTab customers={customers} onAddCustomer={addCustomerRecord} onUpdateCustomer={updateCustomerRecord} />
+          <CustomersCrmTab customers={customers} suppliers={suppliers} onAddCustomer={addCustomerRecord} onUpdateCustomer={updateCustomerRecord} onRemoveCustomer={removeCustomerRecord} onRemoveSupplier={removeSupplierRecord} />
         ) : null}
 
         {activeTab === "settings" ? (
@@ -7488,7 +7554,7 @@ export default function FabricationProductionPlannerIntegrated() {
               {xeroSyncStatus ? <p className="mb-4 rounded-xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">{xeroSyncStatus}</p> : null}
               {purchasingFormOpen ? <div className="space-y-3">
                 <Field label="Job"><SelectInput value={newPo.jobId} onChange={(event) => setNewPo({ ...newPo, jobId: event.target.value })}>{jobs.map((job) => <option key={job.id} value={job.id}>{job.jobNo} · {job.title}</option>)}</SelectInput></Field>
-                <Field label="Supplier"><SelectInput value={newPo.supplierId} onChange={(event) => setNewPo({ ...newPo, supplierId: event.target.value })}>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</SelectInput></Field>
+                <Field label="Supplier"><AutoCompleteInput value={suppliers.find((supplier) => supplier.id === newPo.supplierId)?.name || newPo.supplierName || ""} options={suppliers.filter((supplier) => !supplier.hidden && supplier.status !== "Inactive")} getLabel={(supplier) => supplier.name} onChange={(event) => { const typed = event.target.value; const match = suppliers.find((supplier) => supplier.name === typed); setNewPo({ ...newPo, supplierId: match?.id || "", supplierName: typed }); }} /></Field>
                 <div className="space-y-3 rounded-2xl bg-blue-50 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="font-bold">Purchase lines</h3>
@@ -7578,7 +7644,7 @@ export default function FabricationProductionPlannerIntegrated() {
                         </div>
                         <div className="grid gap-3 md:grid-cols-4">
                           <Field label="Job"><SelectInput value={editingPoDraft.jobId} onChange={(event) => updateEditingPoField("jobId", event.target.value)}>{jobs.map((item) => <option key={item.id} value={item.id}>{item.jobNo} · {item.title}</option>)}</SelectInput></Field>
-                          <Field label="Supplier"><SelectInput value={editingPoDraft.supplierId} onChange={(event) => updateEditingPoField("supplierId", event.target.value)}>{suppliers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectInput></Field>
+                          <Field label="Supplier"><AutoCompleteInput value={suppliers.find((supplier) => supplier.id === editingPoDraft.supplierId)?.name || editingPoDraft.supplierName || ""} options={suppliers.filter((supplier) => !supplier.hidden && supplier.status !== "Inactive")} getLabel={(supplier) => supplier.name} onChange={(event) => { const typed = event.target.value; const match = suppliers.find((supplier) => supplier.name === typed); updateEditingPoField("supplierId", match?.id || ""); updateEditingPoField("supplierName", typed); }} /></Field>
                           <Field label="Required by"><TextInput type="date" value={editingPoDraft.requiredBy} onChange={(event) => updateEditingPoField("requiredBy", event.target.value)} /></Field>
                           <Field label="Status"><SelectInput value={editingPoDraft.status} onChange={(event) => updateEditingPoField("status", event.target.value)}>{poStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput></Field>
                         </div>
