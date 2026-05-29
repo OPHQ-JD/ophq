@@ -19,3 +19,5 @@
 - 2026-05-28: [UI/layout] Applied compact sticky horizontal navigation globally across the app. Pricing impact: none. Tests: Vite build, global navigation visual regression recommended.
 
 - 2026-05-29: [planner workflow + database/schema + authentication/user role + UI/layout + file handling] Added operations-only clocking amendments, clean timesheet PDF output, staff stock inventory actions, removed planner test job button, and condensed quote approvals with expandable details. Pricing impact: none. Tests: clocking amendment, timesheet print, staff stock actions, planner button removal, approvals expand/collapse.
+
+- 2026-05-29: [planner workflow + stock/inventory logic] Added material-demand generation from quote-line specified top/bottom plate flats so custom flat sizes check stock first and go to enquiry if missing. Pricing impact: none. Tests: custom 300x10 bottom plate demand, stock allocation, enquiry fallback.
