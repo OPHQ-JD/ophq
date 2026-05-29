@@ -24,3 +24,4 @@
 
 - 2026-05-29: [bug fix + stock/inventory logic] Preserved top/bottom plate material fields into approved quote items so custom flats/plates generate stock/enquiry demand during job conversion. Pricing impact: none. Tests: bottom plate 300x10 full beam length appears in supplier enquiry when not in stock.
 - 2026-05-29: [UI/layout + stock/inventory logic] Purchasing Flat Bar lines now use manual width/thickness entry with existing length field instead of section-size dropdown. Pricing impact: none. Tests: flat bar enquiry/PO line entry, description, stock/offcut creation.
+- 2026-05-29: [pricing logic + database/schema + authentication/user role] Added operations-only Save Pricing control, read-only pricing for Sales/Staff, and saved pricing metadata for backup/shared app state. Pricing impact: confirmed. Tests: build, operations save control, read-only pricing controls.
