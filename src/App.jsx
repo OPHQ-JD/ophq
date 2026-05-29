@@ -132,9 +132,9 @@ const backendPermissionMap = {
   },
   staff: {
     label: "Workshop",
-    canRead: ["assigned_jobs", "job_sheets", "delivery_calendar", "own_clock_entries", "own_holiday_requests", "relevant_stored_documents", "stock_items_readonly"],
+    canRead: ["assigned_jobs", "job_sheets", "delivery_calendar", "own_clock_entries", "own_holiday_requests", "relevant_stored_documents", "stock_items"],
     canCreate: ["own_clock_entries", "own_holiday_requests", "job_progress_updates"],
-    canUpdate: ["assigned_job_task_progress", "own_open_clock_entries", "own_pending_holiday_requests"],
+    canUpdate: ["assigned_job_task_progress", "own_open_clock_entries", "own_pending_holiday_requests", "stock_items"],
     canDelete: [],
     restrictions: ["no_pricing", "no_quote_editing", "no_job_creation", "no_purchase_order_creation", "no_approval_controls", "no_admin_settings"],
   },
@@ -3082,6 +3082,8 @@ function ProductivityTab({ staff, jobs, stageTimeEntries, productivityRules, set
 }
 
 function PlannerQuotesInbox({ quotePackages, onUpdateQuotePackageStatus, onConvertToJob, automationStatus }) {
+  const [openQuoteIds, setOpenQuoteIds] = useState({});
+  const toggleDetails = (quoteId) => setOpenQuoteIds((current) => ({ ...current, [quoteId]: !current[quoteId] }));
   return (
     <div className="space-y-6">
       <div className="rounded-3xl bg-white p-5 shadow-sm">
@@ -3109,7 +3111,7 @@ function PlannerQuotesInbox({ quotePackages, onUpdateQuotePackageStatus, onConve
               </div>
               <span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${quotePackage.inboxStatus === "Converted" ? "bg-emerald-100 text-emerald-800" : quotePackage.inboxStatus === "Rejected" ? "bg-red-100 text-red-800" : quotePackage.inboxStatus === "Accepted" ? "bg-emerald-100 text-emerald-800" : "bg-blue-100 text-blue-800"}`}>{quotePackage.inboxStatus}</span>
             </div>
-            <div className="mt-4 overflow-x-auto rounded-2xl bg-blue-50 p-3">
+            {openQuoteIds[quotePackage.quoteId] ? <div className="mt-4 overflow-x-auto rounded-2xl bg-blue-50 p-3">
               <table className="w-full min-w-[800px] border-collapse text-sm">
                 <thead><tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-2 pr-3">Item</th><th className="py-2 pr-3">Section</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3 text-right">Length</th><th className="py-2 pr-3 text-right">Total</th></tr></thead>
                 <tbody>
@@ -3124,8 +3126,9 @@ function PlannerQuotesInbox({ quotePackages, onUpdateQuotePackageStatus, onConve
                   ))}
                 </tbody>
               </table>
-            </div>
+            </div> : null}
             <div className="mt-4 flex flex-wrap gap-2">
+              <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => toggleDetails(quotePackage.quoteId)}>{openQuoteIds[quotePackage.quoteId] ? "Hide details" : "Open details"}</button>
               <button disabled={quotePackage.inboxStatus !== "Awaiting lead time review"} className="rounded-xl border bg-white px-4 py-2 text-sm font-bold disabled:opacity-40" onClick={() => onUpdateQuotePackageStatus(quotePackage, "Ready to send to customer")}>Approve lead time</button>
               <button disabled={quotePackage.inboxStatus !== "Ready to send to customer"} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => onUpdateQuotePackageStatus(quotePackage, "Sent to customer")}>Mark sent to customer</button>
               <button disabled={quotePackage.inboxStatus !== "Sent to customer"} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => onUpdateQuotePackageStatus(quotePackage, "Accepted")}>Mark accepted</button>
@@ -3201,7 +3204,7 @@ function DeliveryCalendar({ jobs, deliveryNotes, customers, onCreateDeliveryNote
   );
 }
 
-function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClockIn, onClockOut, onAddSickDay, onDeleteSickDay }) {
+function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClockIn, onClockOut, onAddSickDay, onDeleteSickDay, onAmendClockEntry }) {
   const today = toIso(new Date());
   const [staffPins, setStaffPins] = useState({});
   const [staffPinErrors, setStaffPinErrors] = useState({});
@@ -3227,6 +3230,8 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
   const [timesheetPinError, setTimesheetPinError] = useState("");
   const [sickDayForm, setSickDayForm] = useState({ staffId: staff[0]?.id || "", start: today, end: today, notes: "" });
   const [sickDayError, setSickDayError] = useState("");
+  const [amendmentForm, setAmendmentForm] = useState({ staffId: staff[0]?.id || "", date: today, clockIn: "08:00", clockOut: "16:00", reason: "Forgot to clock" });
+  const [amendmentError, setAmendmentError] = useState("");
 
   function unlockTimesheet() {
     if (timesheetPin === "3490") {
@@ -3330,6 +3335,37 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
     setSickDayForm((current) => ({ ...current, notes: "" }));
   }
 
+  function submitClockingAmendment() {
+    setAmendmentError("");
+    if (activeRole !== "operations") {
+      setAmendmentError("Only operations users can amend clocking records.");
+      return;
+    }
+    if (!amendmentForm.staffId || !amendmentForm.date || !amendmentForm.clockIn || !amendmentForm.clockOut) {
+      setAmendmentError("Select staff, date, clock-in and clock-out times.");
+      return;
+    }
+    if (amendmentForm.clockOut <= amendmentForm.clockIn) {
+      setAmendmentError("Clock-out must be after clock-in.");
+      return;
+    }
+    if (!String(amendmentForm.reason || "").trim()) {
+      setAmendmentError("Enter a reason for the amendment.");
+      return;
+    }
+    onAmendClockEntry?.({
+      id: createEntityId("clock-amendment"),
+      staffId: amendmentForm.staffId,
+      date: amendmentForm.date,
+      clockIn: amendmentForm.clockIn,
+      clockOut: amendmentForm.clockOut,
+      amended: true,
+      amendmentReason: amendmentForm.reason.trim(),
+      amendedAt: new Date().toISOString(),
+    });
+    setAmendmentForm((current) => ({ ...current, reason: "" }));
+  }
+
   function getStaffPeriodSummary(person) {
     const period = getClockingMonthPeriod(new Date());
     const workingDays = getWorkingDaysInPeriod(period.start, period.end);
@@ -3381,6 +3417,19 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
   const totalAbsenceHours = staff.reduce((sum, person) => sum + getPeriodSickDays(person.id).reduce((inner, entry) => inner + getSickDayHours(entry, person), 0), 0);
   const totalExpectedHours = staff.reduce((sum, person) => sum + periodWorkingDays * Number(person.hoursPerDay || 0), 0);
   const totalOvertimeHours = staff.reduce((sum, person) => sum + getStaffPeriodSummary(person).overtimeHours, 0);
+
+  function openTimesheetPrintPreview() {
+    const timesheetRows = staff.flatMap((person) => getPeriodTimesheetRows(person.id).map((entry) => {
+      const split = getEntrySplit(entry, person);
+      const hours = entry.type === "Sick" ? getSickDayHours(entry, person).toFixed(2) : calculateHours(entry);
+      return { ...entry, staffName: person?.name || "Unknown", regular: split.regular, overtime: split.overtime, hours };
+    }));
+    const rowsHtml = timesheetRows.map((entry) => `<tr><td>${entry.staffName}</td><td>${entry.date}</td><td>${entry.type}${entry.amended ? " · Amended" : ""}</td><td>${entry.clockIn || ""}</td><td>${entry.clockOut || ""}</td><td class="num">${entry.hours}</td><td class="num">${entry.regular}</td><td class="num">${entry.overtime}</td><td>${entry.amendmentReason || entry.notes || ""}</td></tr>`).join("");
+    const printWindow = window.open("", "_blank", "width=1000,height=1100");
+    if (!printWindow) return;
+    printWindow.document.write(`<!doctype html><html><head><title>JDFabs Timesheet ${period.start} to ${period.end}</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111827;margin:0}.header{display:flex;justify-content:space-between;border-bottom:2px solid #111827;padding-bottom:12px;margin-bottom:16px}.brand{font-size:24px;font-weight:800}.muted{font-size:12px;color:#4b5563;line-height:1.5}.summary{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:12px 0}.box{border:1px solid #d1d5db;border-radius:8px;padding:8px;font-size:12px}.box strong{display:block;font-size:16px;margin-top:2px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f4f6;text-align:left;border:1px solid #d1d5db;padding:6px;text-transform:uppercase;font-size:10px}td{border:1px solid #d1d5db;padding:6px;vertical-align:top}.num{text-align:right;font-weight:700}.footer{margin-top:12px;border-top:1px solid #d1d5db;padding-top:8px;font-size:10px;color:#6b7280}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><div class="header"><div><div class="brand">JDFabs Staff Timesheet</div><div class="muted">Clocking period ${period.start} to ${period.end}<br/>Generated ${new Date().toLocaleString()}</div></div><div class="muted">Clean PDF / print output</div></div><div class="summary"><div class="box">Standard days<strong>${periodWorkingDays}</strong></div><div class="box">Standard hours<strong>${totalExpectedHours.toFixed(2)}</strong></div><div class="box">Clocked hours<strong>${totalHours.toFixed(2)}</strong></div><div class="box">Absence hours<strong>${totalAbsenceHours.toFixed(2)}</strong></div><div class="box">Overtime<strong>${totalOvertimeHours.toFixed(2)}</strong></div></div><table><thead><tr><th>Staff</th><th>Date</th><th>Type</th><th>Clock In</th><th>Clock Out</th><th>Hours</th><th>Regular</th><th>Overtime</th><th>Notes / Amendment reason</th></tr></thead><tbody>${rowsHtml || `<tr><td colspan="9">No timesheet rows in this period.</td></tr>`}</tbody></table><div class="footer">Operations amendments are marked as amended and included in the totals.</div><script>window.onload=()=>window.print()</script></body></html>`);
+    printWindow.document.close();
+  }
 
   return (
     <div className="space-y-6">
@@ -3467,6 +3516,22 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
           </table>
         </div>
       </div>
+
+      {activeRole === "operations" ? (
+        <div className="rounded-3xl bg-white p-5 shadow-sm">
+          <h3 className="text-lg font-bold">Clocking Amendment</h3>
+          <p className="mt-1 text-sm text-blue-800">Operations-only correction for missed clock-in or clock-out. Amendments feed the timesheet and are audit logged.</p>
+          <div className="mt-4 grid gap-3 md:grid-cols-6">
+            <label className="text-sm font-semibold text-blue-950">Staff<select className="mt-1 w-full rounded-xl border border-blue-100 bg-white px-3 py-2 text-sm" value={amendmentForm.staffId} onChange={(event) => setAmendmentForm((current) => ({ ...current, staffId: event.target.value }))}>{staff.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+            <label className="text-sm font-semibold text-blue-950">Date<TextInput type="date" value={amendmentForm.date} onChange={(event) => setAmendmentForm((current) => ({ ...current, date: event.target.value }))} /></label>
+            <label className="text-sm font-semibold text-blue-950">Clock in<TextInput type="time" value={amendmentForm.clockIn} onChange={(event) => setAmendmentForm((current) => ({ ...current, clockIn: event.target.value }))} /></label>
+            <label className="text-sm font-semibold text-blue-950">Clock out<TextInput type="time" value={amendmentForm.clockOut} onChange={(event) => setAmendmentForm((current) => ({ ...current, clockOut: event.target.value }))} /></label>
+            <label className="text-sm font-semibold text-blue-950 md:col-span-1">Reason<TextInput value={amendmentForm.reason} placeholder="Required" onChange={(event) => setAmendmentForm((current) => ({ ...current, reason: event.target.value }))} /></label>
+            <div className="flex items-end"><button className="w-full rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={submitClockingAmendment}>Add amendment</button></div>
+          </div>
+          {amendmentError ? <p className="mt-3 text-sm font-semibold text-red-600">{amendmentError}</p> : null}
+        </div>
+      ) : null}
 
       {activeRole === "operations" ? (
         <div className="rounded-3xl bg-white p-5 shadow-sm">
@@ -3557,7 +3622,7 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
                   <p>Counted hours: {(totalHours + totalAbsenceHours).toFixed(2)}</p>
                   <p>Overtime: {totalOvertimeHours.toFixed(2)}</p>
                 </div>
-                <button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={() => window.print()}>
+                <button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={openTimesheetPrintPreview}>
                   Print / Save PDF timesheet
                 </button>
               </div>
@@ -6067,6 +6132,21 @@ export default function FabricationProductionPlannerIntegrated() {
     }, ...current]);
   }
 
+  function amendClockEntry(record) {
+    if (activeRole !== "operations" || !record) return;
+    setClockEntries((current) => [{ ...record, createdByRole: activeRole }, ...current]);
+    setAuditLog((current) => [{
+      id: createEntityId("audit"),
+      createdAt: new Date().toISOString(),
+      role: activeRole,
+      action: "create",
+      resource: "clock_entries",
+      recordId: record.id,
+      notes: `Clocking amendment recorded: ${record.amendmentReason || "No reason supplied"}`,
+    }, ...current]);
+    setAutomationStatus("Clocking amendment recorded and added to the timesheet.");
+  }
+
   function updateHolidayForm(staffId, patch) {
     setHolidayForms((current) => ({
       ...current,
@@ -7360,7 +7440,7 @@ export default function FabricationProductionPlannerIntegrated() {
         ) : null}
 
         {activeTab === "clocking" ? (
-          <ClockingInTab staff={staff} clockEntries={clockEntries} sickDays={sickDays} activeRole={activeRole} onClockIn={clockInStaff} onClockOut={clockOutStaff} onAddSickDay={addSickDays} onDeleteSickDay={deleteSickDay} />
+          <ClockingInTab staff={staff} clockEntries={clockEntries} sickDays={sickDays} activeRole={activeRole} onClockIn={clockInStaff} onClockOut={clockOutStaff} onAddSickDay={addSickDays} onDeleteSickDay={deleteSickDay} onAmendClockEntry={amendClockEntry} />
         ) : null}
 
         {activeTab === "holiday" ? (
@@ -7803,7 +7883,7 @@ export default function FabricationProductionPlannerIntegrated() {
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div><SectionHeader eyebrow="Live Planner" title="Production Calendar" description="Automatic staff allocation based on role priority, workload, job priority and deadlines." />
                 <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p></div>
-                {activeRole === "operations" ? <div className="flex flex-wrap gap-2"><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={runPlannerFunctionalTest}>Run function test</button><button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={addPlannerStressTestJobs}>Add 10 test jobs</button></div> : null}
+                {activeRole === "operations" ? <div className="flex flex-wrap gap-2"><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={runPlannerFunctionalTest}>Run function test</button></div> : null}
               </div>
               {plannerTestReport ? (
                 <div className={`mb-4 rounded-2xl p-4 ${plannerTestReport.passed ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-900"}`}>
