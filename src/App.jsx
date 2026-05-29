@@ -1706,6 +1706,22 @@ function buildSteelQuoteItem(line, pricingSchedule, productDatabase = steelProdu
     weightKg,
     notes: line.notes || "",
     processDetails: details,
+    // Preserve quote-line material details so job creation and purchasing can
+    // generate stock/enquiry demand for custom flats/plates as well as the main beam.
+    topPlateRequired: line.topPlateRequired || "No",
+    topPlateThickness: line.topPlateThickness || "",
+    topPlateWidth: line.topPlateWidth || "",
+    topPlateLength: line.topPlateLength || "",
+    topPlateQuantity: Number(line.topPlateQuantity || 1),
+    topPlateWeldHitMm: line.topPlateWeldHitMm || "",
+    topPlateWeldMissMm: line.topPlateWeldMissMm || "",
+    bottomPlateRequired: line.bottomPlateRequired || "No",
+    bottomPlateThickness: line.bottomPlateThickness || "",
+    bottomPlateWidth: line.bottomPlateWidth || "",
+    bottomPlateLength: line.bottomPlateLength || "",
+    bottomPlateQuantity: Number(line.bottomPlateQuantity || 1),
+    bottomPlateWeldHitMm: line.bottomPlateWeldHitMm || "",
+    bottomPlateWeldMissMm: line.bottomPlateWeldMissMm || "",
   };
 }
 
@@ -6724,7 +6740,9 @@ export default function FabricationProductionPlannerIntegrated() {
       description: `${part.description}${part.sectionSize ? ` · ${part.sectionSize}` : ""}${part.grade ? ` · ${part.grade}` : ""}${part.finish ? ` · ${part.finish}` : ""}`,
       productId: part.productId || "ub",
       sectionSize: part.sectionSize || "",
+      grade: part.grade || "",
       length: part.length || "",
+      requiredCutLength: part.requiredCutLength || part.length || "",
       finish: part.finish || "Self colour",
       quantity: Math.max(1, Number(status.missingQuantity || part.quantity || 1)),
       unitCost: 0,
@@ -6748,7 +6766,9 @@ export default function FabricationProductionPlannerIntegrated() {
       description: buildPoLineDescription(line, productDatabase),
       productId: line.productId,
       sectionSize: line.sectionSize,
+      grade: line.grade || "",
       length: line.length,
+      requiredCutLength: line.requiredCutLength || line.length || "",
       finish: line.finish,
       quantity: Number(line.quantity || 1),
       unitCost: Number(line.unitCost || 0),
