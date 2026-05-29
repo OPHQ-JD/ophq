@@ -3666,25 +3666,68 @@ function ClockingInTab({ staff, clockEntries, sickDays = [], activeRole, onClock
   );
 }
 
+function buildFlatMaterialSectionSize(widthMm, thicknessMm) {
+  const width = Number(widthMm || 0);
+  const thickness = Number(thicknessMm || 0);
+  if (!width || !thickness) return "";
+  return `${width}x${thickness}`;
+}
+
+function getQuoteLineMaterialDemands(item = {}, job = {}, index = 0) {
+  const lineQuantity = Math.max(1, Number(item.quantity || 1));
+  const baseRawLength = item.requiredCutLength || item.cutLength || item.jobLength || item.lengthM || item.length || item.sizeLength || item.itemLength || 0;
+  const basePart = {
+    id: item.id || `job-part-${job.id}-${index}`,
+    productId: item.productId || "",
+    description: item.description || item.productName || item.title || "Quote item",
+    sectionSize: item.sectionSize || item.size || "",
+    grade: item.grade || "",
+    finish: item.finish || "",
+    length: normaliseLengthM(baseRawLength) || Number(baseRawLength || 0),
+    requiredCutLength: item.requiredCutLength || item.cutLength || item.jobLength || baseRawLength,
+    width: Number(item.width || 0),
+    quantity: lineQuantity,
+    weightKg: Number(item.weightKg || 0),
+    notes: item.notes || "",
+  };
+
+  const demands = [basePart];
+  const addPlateDemand = (type) => {
+    const prefix = type === "top" ? "topPlate" : "bottomPlate";
+    if (item[`${prefix}Required`] !== "Yes") return;
+    const thickness = item[`${prefix}Thickness`];
+    const width = item[`${prefix}Width`];
+    const sectionSize = buildFlatMaterialSectionSize(width, thickness);
+    const rawLength = item[`${prefix}Length`] || item.length || baseRawLength;
+    const length = normaliseLengthM(rawLength) || Number(rawLength || 0);
+    const plateQuantity = Math.max(1, Number(item[`${prefix}Quantity`] || 1)) * lineQuantity;
+    if (!sectionSize || !length || !plateQuantity) return;
+    demands.push({
+      id: `${item.id || `job-part-${job.id}-${index}`}-${type}-plate-material`,
+      productId: "flat",
+      description: `${type === "top" ? "Top" : "Bottom"} plate / flat ${sectionSize}`,
+      sectionSize,
+      grade: item.grade || "",
+      finish: "Self colour",
+      length,
+      requiredCutLength: length,
+      width: Number(width || 0),
+      thickness: Number(thickness || 0),
+      quantity: plateQuantity,
+      weightKg: 0,
+      materialDemandType: `${type}-plate`,
+      parentQuoteLineId: item.id || "",
+      notes: `${type === "top" ? "Top" : "Bottom"} plate material from quote line.`,
+    });
+  };
+  addPlateDemand("top");
+  addPlateDemand("bottom");
+  return demands;
+}
+
 function getJobPartsList(job, quote) {
   const sourceItems = quote?.takeoffLines?.length ? quote.takeoffLines : quote?.items?.length ? quote.items : job.partsList || [];
-  return sourceItems.map((item, index) => {
-    const rawLength = item.requiredCutLength || item.cutLength || item.jobLength || item.lengthM || item.length || item.sizeLength || item.itemLength || 0;
-    return {
-      id: item.id || `job-part-${job.id}-${index}`,
-      productId: item.productId || "",
-      description: item.description || item.productName || item.title || "Quote item",
-      sectionSize: item.sectionSize || item.size || "",
-      grade: item.grade || "",
-      finish: item.finish || "",
-      length: normaliseLengthM(rawLength) || Number(rawLength || 0),
-      requiredCutLength: item.requiredCutLength || item.cutLength || item.jobLength || rawLength,
-      width: Number(item.width || 0),
-      quantity: Number(item.quantity || 1),
-      weightKg: Number(item.weightKg || 0),
-      notes: item.notes || "",
-    };
-  });
+  return sourceItems.flatMap((item, index) => getQuoteLineMaterialDemands(item, job, index));
 }
 
 function stockMatchesPart(stockItem, part) {
