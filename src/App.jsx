@@ -3886,6 +3886,7 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
 
 function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts }) {
   const productDatabase = getProductDatabase(customProducts);
+  const canEditPricing = activeRole === "operations";
   const [addStockOpen, setAddStockOpen] = useState(false);
   const totalStockLines = stockItems.length;
   const lowStockLines = stockItems.filter((item) => item.status === "Low Stock" || Number(item.quantity || 0) <= 0).length;
@@ -4540,8 +4541,9 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
   );
 }
 
-function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, customProducts, onAddCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
+function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
+  const canEditPricing = activeRole === "operations";
   const [quoteMeta, setQuoteMeta] = useState({ customerId: customers[0]?.id || "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "" });
   const [lineForm, setLineForm] = useState({
     lineProductId: "",
@@ -4764,6 +4766,10 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
   }
 
   function updatePricingRow(productId, patch, sectionSize = undefined) {
+    if (!canEditPricing) {
+      setStatus("Pricing can only be amended by Operations. Sales quotes use the saved Operations pricing schedule.");
+      return;
+    }
     setPricingSchedule((current) => current.map((row) => {
       const sameProduct = row.productId === productId;
       const sameSection = sectionSize === undefined ? true : String(row.sectionSize || "") === String(sectionSize || "");
@@ -5008,14 +5014,18 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h3 className="text-base font-bold">Pricing</h3>
-            <p className="mt-1 text-sm text-blue-800">Internal pricing schedule. Steel and finish rows are £/tonne; fixed process rows are per item/process.</p>
+            <p className="mt-1 text-sm text-blue-800">Operations-owned saved pricing schedule. Sales quotes use these saved rates but cannot alter them.</p>
+            {pricingSaveMeta?.savedAt ? <p className="mt-1 text-xs font-semibold text-emerald-700">Last saved by {pricingSaveMeta.savedBy || "Operations"} at {new Date(pricingSaveMeta.savedAt).toLocaleString("en-GB")}</p> : <p className="mt-1 text-xs font-semibold text-amber-700">Pricing is using the current saved app data. Operations should press Save Pricing after markup changes.</p>}
           </div>
-          <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setPricingPanelOpen(!pricingPanelOpen)}>{pricingPanelOpen ? "Hide pricing" : "Open pricing"}</button>
+          <div className="flex flex-wrap gap-2">
+            {canEditPricing ? <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white" onClick={onSavePricing}>Save Pricing</button> : <span className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">Read-only pricing</span>}
+            <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setPricingPanelOpen(!pricingPanelOpen)}>{pricingPanelOpen ? "Hide pricing" : "Open pricing"}</button>
+          </div>
         </div>
         {pricingPanelOpen ? <div className="mt-4 overflow-auto rounded-2xl border border-blue-100">
           <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead><tr className="border-b border-blue-100 bg-blue-50 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pl-3 pr-3">Product / Process</th><th className="py-3 pr-3 text-right">Buy price</th><th className="py-3 pr-3 text-right">Markup £</th><th className="py-3 pr-3 text-right">Sell</th></tr></thead>
-            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td></tr>)}</tbody>
+            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td></tr>)}</tbody>
           </table>
         </div> : null}
       </div>
@@ -5900,6 +5910,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [xeroStatus, setXeroStatus] = useState({});
   const [unlockedTabs, setUnlockedTabs] = useState({ quotes: false, jobs: false });
   const [pricingSchedule, setPricingSchedule] = useState(normaliseSteelPricingSchedule(savedAppState.pricingSchedule || defaultSteelPricingSchedule));
+  const [pricingSaveMeta, setPricingSaveMeta] = useState(savedAppState.pricingSaveMeta || { savedAt: savedAppState.savedAt || "", savedBy: "Operations", savedByRole: "operations" });
   const [productivityRules, setProductivityRules] = useState(() => normaliseProductivityRules(savedAppState.productivityRules || defaultProductivityRules));
   const [customProducts, setCustomProducts] = useState(savedAppState.customProducts || []);
   const [storedDocuments, setStoredDocuments] = useState(savedAppState.storedDocuments || []);
@@ -7316,6 +7327,7 @@ export default function FabricationProductionPlannerIntegrated() {
       sickDays,
       stageTimeEntries,
       pricingSchedule,
+      pricingSaveMeta,
       productivityRules,
       customProducts,
       storedDocuments,
@@ -7335,7 +7347,7 @@ export default function FabricationProductionPlannerIntegrated() {
     } else {
       setCloudSyncStatus("Local save active");
     }
-  }, [customers, staff, suppliers, quotes, plannerQuotePackages, jobs, purchaseOrders, deliveryNotes, stockItems, importLogs, companySettings, clockEntries, holidays, sickDays, stageTimeEntries, pricingSchedule, productivityRules, customProducts, storedDocuments, profiles, auditLog, authStatus, recordLocks]);
+  }, [customers, staff, suppliers, quotes, plannerQuotePackages, jobs, purchaseOrders, deliveryNotes, stockItems, importLogs, companySettings, clockEntries, holidays, sickDays, stageTimeEntries, pricingSchedule, pricingSaveMeta, productivityRules, customProducts, storedDocuments, profiles, auditLog, authStatus, recordLocks]);
 
   function addCustomProduct(product) {
     const created = actionService.createRecord({ resource: "custom_products", record: product, setter: setCustomProducts, notes: "Custom product created from Quote Builder setup." });
@@ -7366,6 +7378,22 @@ export default function FabricationProductionPlannerIntegrated() {
     saveDocumentToCloudStorage({ html, documentRecord }).catch(() => null);
   }
 
+  function savePricingScheduleForOperations() {
+    if (activeRole !== "operations") {
+      setActionStatus("Only Operations can save pricing and markup changes.");
+      return;
+    }
+    const user = getProfileForRole(activeRole, profiles);
+    const nextMeta = { savedAt: new Date().toISOString(), savedBy: user?.name || "Operations", savedByRole: activeRole };
+    setPricingSaveMeta(nextMeta);
+    const snapshot = {
+      customers, staff, suppliers, quotes, plannerQuotePackages, jobs, purchaseOrders, deliveryNotes, stockItems, importLogs, companySettings, clockEntries, holidays, sickDays, stageTimeEntries, pricingSchedule, pricingSaveMeta: nextMeta, productivityRules, customProducts, storedDocuments, profiles, auditLog, authStatus, recordLocks, savedAt: new Date().toISOString(),
+    };
+    saveAppState(snapshot);
+    setAuditLog((current) => [createAuditLogEntry({ user, action: "save_pricing", resource: "pricing_schedule", resourceId: "pricingSchedule", outcome: "success", notes: "Operations saved pricing and markup schedule." }), ...current].slice(0, 500));
+    setActionStatus("Pricing saved. Sales quotations will use the latest saved Operations prices on this shared data store.");
+  }
+
   function exportLocalBackup() {
     const snapshot = {
       customers,
@@ -7384,6 +7412,7 @@ export default function FabricationProductionPlannerIntegrated() {
       sickDays,
       stageTimeEntries,
       pricingSchedule,
+      pricingSaveMeta,
       productivityRules,
       customProducts,
       storedDocuments,
@@ -7662,6 +7691,9 @@ export default function FabricationProductionPlannerIntegrated() {
             setQuotes={setQuotes}
             pricingSchedule={pricingSchedule}
             setPricingSchedule={setPricingSchedule}
+            pricingSaveMeta={pricingSaveMeta}
+            onSavePricing={savePricingScheduleForOperations}
+            activeRole={activeRole}
             customProducts={customProducts}
             onAddCustomProduct={addCustomProduct}
             onSendToPlannerInbox={sendQuoteToPlannerInbox}
