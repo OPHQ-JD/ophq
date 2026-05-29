@@ -3689,6 +3689,26 @@ function buildFlatMaterialSectionSize(widthMm, thicknessMm) {
   return `${width}x${thickness}`;
 }
 
+
+function parseFlatMaterialSectionSize(sectionSize = "") {
+  const match = String(sectionSize || "").match(/([0-9]+(?:[.][0-9]+)?)\s*x\s*([0-9]+(?:[.][0-9]+)?)/i);
+  if (!match) return { width: "", thickness: "" };
+  return { width: match[1], thickness: match[2] };
+}
+
+function buildPurchasingFlatPatch(currentLine = {}, patch = {}) {
+  const width = patch.flatWidth ?? patch.width ?? currentLine.flatWidth ?? currentLine.width ?? parseFlatMaterialSectionSize(currentLine.sectionSize).width;
+  const thickness = patch.flatThickness ?? patch.thickness ?? currentLine.flatThickness ?? currentLine.thickness ?? parseFlatMaterialSectionSize(currentLine.sectionSize).thickness;
+  return {
+    ...patch,
+    flatWidth: width,
+    flatThickness: thickness,
+    width,
+    thickness,
+    sectionSize: buildFlatMaterialSectionSize(width, thickness),
+  };
+}
+
 function getQuoteLineMaterialDemands(item = {}, job = {}, index = 0) {
   const lineQuantity = Math.max(1, Number(item.quantity || 1));
   const baseRawLength = item.requiredCutLength || item.cutLength || item.jobLength || item.lengthM || item.length || item.sizeLength || item.itemLength || 0;
@@ -7729,8 +7749,11 @@ export default function FabricationProductionPlannerIntegrated() {
                       <p className="mb-2 text-xs font-bold text-blue-600">Line {index + 1}</p>
                       <div className="space-y-2">
                         <div className="grid gap-2 md:grid-cols-2">
-                          <Field label="Product"><SelectInput value={line.productId || "ub"} onChange={(event) => { const options = getSectionOptions(event.target.value, customProducts); updatePoLine(line.id, { productId: event.target.value, sectionSize: options[0] || "" }); }}>{productDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
-                          <Field label="Section / Size"><SelectInput value={line.sectionSize || ""} onChange={(event) => updatePoLine(line.id, { sectionSize: event.target.value })}>{getSectionOptions(line.productId || "ub", customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></Field>
+                          <Field label="Product"><SelectInput value={line.productId || "ub"} onChange={(event) => { const productId = event.target.value; const options = getSectionOptions(productId, customProducts); const flatParts = parseFlatMaterialSectionSize(line.sectionSize); updatePoLine(line.id, productId === "flat" ? { productId, sectionSize: buildFlatMaterialSectionSize(line.flatWidth || line.width || flatParts.width, line.flatThickness || line.thickness || flatParts.thickness), flatWidth: line.flatWidth || line.width || flatParts.width || "", flatThickness: line.flatThickness || line.thickness || flatParts.thickness || "", width: line.flatWidth || line.width || flatParts.width || "", thickness: line.flatThickness || line.thickness || flatParts.thickness || "" } : { productId, sectionSize: options[0] || "", flatWidth: "", flatThickness: "", width: "", thickness: "" }); }}>{productDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
+                          {line.productId === "flat" ? <>
+                            <Field label="Flat width mm"><TextInput type="number" value={line.flatWidth || line.width || parseFlatMaterialSectionSize(line.sectionSize).width || ""} onChange={(event) => updatePoLine(line.id, buildPurchasingFlatPatch(line, { flatWidth: event.target.value, width: event.target.value }))} placeholder="e.g. 300" /></Field>
+                            <Field label="Flat thickness mm"><TextInput type="number" value={line.flatThickness || line.thickness || parseFlatMaterialSectionSize(line.sectionSize).thickness || ""} onChange={(event) => updatePoLine(line.id, buildPurchasingFlatPatch(line, { flatThickness: event.target.value, thickness: event.target.value }))} placeholder="e.g. 10" /></Field>
+                          </> : <Field label="Section / Size"><SelectInput value={line.sectionSize || ""} onChange={(event) => updatePoLine(line.id, { sectionSize: event.target.value })}>{getSectionOptions(line.productId || "ub", customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></Field>}
                           <Field label="Length"><TextInput value={line.length || ""} onChange={(event) => updatePoLine(line.id, { length: event.target.value })} placeholder="e.g. 6m / 4400mm" /></Field>
                           <Field label="Quantity"><SelectInput value={line.quantity || 1} onChange={(event) => updatePoLine(line.id, { quantity: event.target.value })}>{Array.from({ length: 20 }, (_, qtyIndex) => qtyIndex + 1).map((qty) => <option key={qty} value={qty}>{qty}</option>)}</SelectInput></Field>
                           <Field label="Finish"><SelectInput value={line.finish || "Self colour"} onChange={(event) => updatePoLine(line.id, { finish: event.target.value })}>{steelFinishOptions.map((finish) => <option key={finish}>{finish}</option>)}</SelectInput></Field>
@@ -7822,8 +7845,11 @@ export default function FabricationProductionPlannerIntegrated() {
                               <div key={item.id} className="rounded-xl bg-white p-3">
                                 <p className="mb-2 text-xs font-bold text-blue-600">Line {index + 1}</p>
                                 <div className="grid gap-2 md:grid-cols-3 md:items-end">
-                                  <Field label="Product"><SelectInput value={item.productId || "ub"} onChange={(event) => { const options = getSectionOptions(event.target.value, customProducts); updateEditingPoLine(item.id, { productId: event.target.value, sectionSize: options[0] || "" }); }}>{productDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
-                                  <Field label="Section / Size"><SelectInput value={item.sectionSize || ""} onChange={(event) => updateEditingPoLine(item.id, { sectionSize: event.target.value })}>{getSectionOptions(item.productId || "ub", customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></Field>
+                                  <Field label="Product"><SelectInput value={item.productId || "ub"} onChange={(event) => { const productId = event.target.value; const options = getSectionOptions(productId, customProducts); const flatParts = parseFlatMaterialSectionSize(item.sectionSize); updateEditingPoLine(item.id, productId === "flat" ? { productId, sectionSize: buildFlatMaterialSectionSize(item.flatWidth || item.width || flatParts.width, item.flatThickness || item.thickness || flatParts.thickness), flatWidth: item.flatWidth || item.width || flatParts.width || "", flatThickness: item.flatThickness || item.thickness || flatParts.thickness || "", width: item.flatWidth || item.width || flatParts.width || "", thickness: item.flatThickness || item.thickness || flatParts.thickness || "" } : { productId, sectionSize: options[0] || "", flatWidth: "", flatThickness: "", width: "", thickness: "" }); }}>{productDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field>
+                                  {item.productId === "flat" ? <>
+                                    <Field label="Flat width mm"><TextInput type="number" value={item.flatWidth || item.width || parseFlatMaterialSectionSize(item.sectionSize).width || ""} onChange={(event) => updateEditingPoLine(item.id, buildPurchasingFlatPatch(item, { flatWidth: event.target.value, width: event.target.value }))} placeholder="e.g. 300" /></Field>
+                                    <Field label="Flat thickness mm"><TextInput type="number" value={item.flatThickness || item.thickness || parseFlatMaterialSectionSize(item.sectionSize).thickness || ""} onChange={(event) => updateEditingPoLine(item.id, buildPurchasingFlatPatch(item, { flatThickness: event.target.value, thickness: event.target.value }))} placeholder="e.g. 10" /></Field>
+                                  </> : <Field label="Section / Size"><SelectInput value={item.sectionSize || ""} onChange={(event) => updateEditingPoLine(item.id, { sectionSize: event.target.value })}>{getSectionOptions(item.productId || "ub", customProducts).map((section) => <option key={section} value={section}>{section}</option>)}</SelectInput></Field>}
                                   <Field label="Ordered length"><TextInput value={item.length || ""} onChange={(event) => updateEditingPoLine(item.id, { length: event.target.value })} placeholder="e.g. 6m / 4400mm" /></Field>
                                   <Field label="Allocated cut"><TextInput value={item.requiredCutLength || item.allocatedLength || item.length || ""} onChange={(event) => updateEditingPoLine(item.id, { requiredCutLength: event.target.value })} placeholder="job cut e.g. 4m" /></Field>
                                   <Field label="Quantity"><SelectInput value={item.quantity || 1} onChange={(event) => updateEditingPoLine(item.id, { quantity: event.target.value })}>{Array.from({ length: 20 }, (_, qtyIndex) => qtyIndex + 1).map((qty) => <option key={qty} value={qty}>{qty}</option>)}</SelectInput></Field>
