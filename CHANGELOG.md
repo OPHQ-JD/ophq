@@ -23,3 +23,4 @@
 - 2026-05-29: [planner workflow + stock/inventory logic] Added material-demand generation from quote-line specified top/bottom plate flats so custom flat sizes check stock first and go to enquiry if missing. Pricing impact: none. Tests: custom 300x10 bottom plate demand, stock allocation, enquiry fallback.
 
 - 2026-05-29: [bug fix + stock/inventory logic] Preserved top/bottom plate material fields into approved quote items so custom flats/plates generate stock/enquiry demand during job conversion. Pricing impact: none. Tests: bottom plate 300x10 full beam length appears in supplier enquiry when not in stock.
+- 2026-05-29: [UI/layout + stock/inventory logic] Purchasing Flat Bar lines now use manual width/thickness entry with existing length field instead of section-size dropdown. Pricing impact: none. Tests: flat bar enquiry/PO line entry, description, stock/offcut creation.
