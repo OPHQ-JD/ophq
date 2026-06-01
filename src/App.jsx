@@ -8023,7 +8023,7 @@ export default function FabricationProductionPlannerIntegrated() {
                   </div>
                 </div>
               ) : null}
-              {activeRole === "operations" ? <div className="overflow-x-auto">
+              <div className="overflow-x-auto">
                 <div className="min-w-[1100px]">
                   <div className="grid grid-cols-[180px_repeat(10,1fr)] border-b text-xs font-bold text-blue-600">
                     <div className="p-2">Staff</div>
@@ -8033,7 +8033,7 @@ export default function FabricationProductionPlannerIntegrated() {
                     <div key={person.id} className="grid min-h-[76px] grid-cols-[180px_repeat(10,1fr)] border-b">
                       <div className="p-3">
                         <p className="font-bold">{person.name}</p>
-                        <p className="text-xs text-blue-600">{(person.roles || []).join(", ") || "No roles"}</p>
+                        {activeRole === "operations" ? <p className="text-xs text-blue-600">{(person.roles || []).join(", ") || "No roles"}</p> : <p className="text-xs text-blue-600">Planner calendar</p>}
                       </div>
                       {weekDays.map((day) => {
                         const holiday = getHolidayForStaffOnDay(person.id, day, holidays);
@@ -8058,7 +8058,8 @@ export default function FabricationProductionPlannerIntegrated() {
                     </div>
                   ))}
                 </div>
-              </div> : <div className="rounded-2xl bg-blue-50 p-5 text-sm font-semibold text-blue-800">Staff planner allocation is hidden for staff access. Operations can view and manage the staff calendar.</div>}
+              </div>
+              {activeRole !== "operations" ? <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-blue-800">Staff can view the planner calendar only. Staff role setup and allocation controls remain operations-only.</div> : null}
             </div>
 
             <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
