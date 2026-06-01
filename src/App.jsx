@@ -3886,7 +3886,6 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
 
 function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts }) {
   const productDatabase = getProductDatabase(customProducts);
-  const canEditPricing = activeRole === "operations";
   const [addStockOpen, setAddStockOpen] = useState(false);
   const totalStockLines = stockItems.length;
   const lowStockLines = stockItems.filter((item) => item.status === "Low Stock" || Number(item.quantity || 0) <= 0).length;
