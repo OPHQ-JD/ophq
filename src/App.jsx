@@ -8116,7 +8116,7 @@ export default function FabricationProductionPlannerIntegrated() {
                 </div>
               </div>
 
-              <div className="rounded-3xl bg-white p-5 shadow-sm">
+              {activeRole === "operations" ? <div className="rounded-3xl bg-white p-5 shadow-sm">
                 <h2 className="text-lg font-bold">Staff</h2>
                 <p className="mt-1 text-sm text-blue-800">Tick the job stages each staff member can cover, then rank each selected stage. Priority 1 is their preferred/best role for automatic planning.</p>
                 <div className="mt-4 space-y-4">
@@ -8183,7 +8183,7 @@ export default function FabricationProductionPlannerIntegrated() {
                     <button className="rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white" onClick={addStaffMember}>Add staff member</button>
                   </div> : null}
                 </div>
-              </div>
+              </div> : null}
             </div>
 
               {selectedJob ? (
