@@ -1741,6 +1741,7 @@ function buildQuotePackage({ quote, customer, leadTime = null }) {
       uploadedFileName: quote.uploadedFileName || "",
       priority: quote.priority || "3",
       requestedDeliveryDate: quote.requestedDeliveryDate || "",
+      jobDeliveryAddress: quote.jobDeliveryAddress || quote.deliveryAddress || "",
       estimatedProductionHours: Number(quote.estimatedProductionHours || 0),
       productionStageBreakdown: quote.productionStageBreakdown || [],
       leadTime: leadTime || quote.leadTime || null,
@@ -1775,6 +1776,8 @@ function createJobFromQuotePackage({ quotePackage, jobCount, today }) {
     customerId: quotePackage.customer?.id || "",
     customer: quotePackage.customer?.company || "Imported Customer",
     title: quotePackage.quoteMeta?.title || quotePackage.quoteNo,
+    deliveryAddress: quotePackage.quoteMeta?.jobDeliveryAddress || quotePackage.customer?.deliveryAddress || "",
+    jobDeliveryAddress: quotePackage.quoteMeta?.jobDeliveryAddress || quotePackage.customer?.deliveryAddress || "",
     deadline: jobEnd,
     start: jobStart,
     end: jobEnd,
@@ -4543,7 +4546,7 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
 function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const canEditPricing = activeRole === "operations";
-  const [quoteMeta, setQuoteMeta] = useState({ customerId: customers[0]?.id || "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "" });
+  const [quoteMeta, setQuoteMeta] = useState({ customerId: customers[0]?.id || "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "" });
   const [lineForm, setLineForm] = useState({
     lineProductId: "",
     productId: "ub",
@@ -4705,6 +4708,8 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       title: quoteMeta.title,
       date: editingQuoteId ? (quotes.find((item) => item.id === editingQuoteId)?.date || toIso(new Date())) : toIso(new Date()),
       validUntil: quoteMeta.validUntil,
+      jobDeliveryAddress: quoteMeta.jobDeliveryAddress || "",
+      deliveryAddress: quoteMeta.jobDeliveryAddress || "",
       priority: quoteMeta.priority,
       requestedDeliveryDate: quoteMeta.requestedDeliveryDate,
       estimatedProductionHours,
@@ -4719,7 +4724,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
     setQuotes((current) => editingQuoteId ? current.map((item) => item.id === editingQuoteId ? bumpRecordVersion(item, quote, null) : item) : [withRecordMeta(quote), ...current]);
     setLines([]);
     setEditingQuoteId(null);
-    setQuoteMeta((current) => ({ ...current, title: "", uploadedFileName: "", requestedDeliveryDate: "" }));
+    setQuoteMeta((current) => ({ ...current, title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "" }));
     setStatus(editingQuoteId ? `${quote.quoteNo} updated and returned to Draft.` : `${quote.quoteNo} raised from steel take-off quote builder.`);
   }
 
@@ -4731,6 +4736,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       uploadedFileName: quote.uploadedFileName || "",
       priority: quote.priority || "3",
       requestedDeliveryDate: quote.requestedDeliveryDate || "",
+      jobDeliveryAddress: quote.jobDeliveryAddress || quote.deliveryAddress || "",
     });
     setLines((quote.takeoffLines || []).map((line) => ({ ...line })));
     setEditingQuoteId(quote.id);
@@ -4836,6 +4842,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
           <Field label="Upload reference file"><input type="file" className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm" onChange={(event) => setQuoteMeta({ ...quoteMeta, uploadedFileName: event.target.files?.[0]?.name || "" })} /></Field>
           <Field label="Priority"><SelectInput value={quoteMeta.priority} onChange={(event) => setQuoteMeta({ ...quoteMeta, priority: event.target.value })}>{quotePriorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</SelectInput></Field>
           <Field label="Requested delivery"><TextInput type="date" value={quoteMeta.requestedDeliveryDate} onChange={(event) => setQuoteMeta({ ...quoteMeta, requestedDeliveryDate: event.target.value })} /></Field>
+          <Field label="Job delivery address"><textarea className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" rows={2} value={quoteMeta.jobDeliveryAddress || ""} onChange={(event) => setQuoteMeta({ ...quoteMeta, jobDeliveryAddress: event.target.value })} placeholder="Optional job-specific delivery address. Leave blank to use customer delivery address." /></Field>
         </div>
         {quoteMeta.uploadedFileName ? <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">Attached: {quoteMeta.uploadedFileName}</p> : null}
         <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -5918,7 +5925,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [auditLog, setAuditLog] = useState(savedAppState.auditLog || []);
   const [authStatus, setAuthStatus] = useState("Login provider pending");
   const [recordLocks, setRecordLocks] = useState(savedAppState.recordLocks || []);
-  const [newQuote, setNewQuote] = useState({ customerId: "c1", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "" });
+  const [newQuote, setNewQuote] = useState({ customerId: "c1", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
   const [takeoffForm, setTakeoffForm] = useState({ productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Primed", length: 1, width: "", thickness: "", quantity: 1, holes: 0, plates: 0, notes: "", unitPrice: 0 });
   const [takeoffLines, setTakeoffLines] = useState([]);
   const [takeoffAiInput, setTakeoffAiInput] = useState("");
@@ -6644,9 +6651,9 @@ export default function FabricationProductionPlannerIntegrated() {
     const reservedQuoteNumber = reserveDocumentNumberSync({ documentType: "quote", records: quotes, linkedSourceNumber: "" });
     const quoteSequence = reservedQuoteNumber.sequence;
     const quote = { id: createEntityId("quote"), quoteSequence,
-    quoteNo: reservedQuoteNumber.number, customerId: newQuote.customerId, customer: customer?.company || "", title: newQuote.title, date: today, validUntil: newQuote.validUntil, status: "Draft", uploadedFileName: newQuote.uploadedFileName, takeoffLines: approvedAiRows, items, ...totals };
+    quoteNo: reservedQuoteNumber.number, customerId: newQuote.customerId, customer: customer?.company || "", title: newQuote.title, date: today, validUntil: newQuote.validUntil, status: "Draft", uploadedFileName: newQuote.uploadedFileName, jobDeliveryAddress: newQuote.jobDeliveryAddress || "", deliveryAddress: newQuote.jobDeliveryAddress || "", takeoffLines: approvedAiRows, items, ...totals };
     setQuotes((current) => [quote, ...current]);
-    setNewQuote({ ...newQuote, title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, uploadedFileName: "" });
+    setNewQuote({ ...newQuote, title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, uploadedFileName: "", jobDeliveryAddress: "" });
     setTakeoffAiPreviewRows([]);
     setTakeoffAiInput("");
     setTakeoffAiStatus("");
@@ -7037,7 +7044,7 @@ export default function FabricationProductionPlannerIntegrated() {
       customerId: job.customerId,
       date: today,
       deliveredTo: customer?.contact || customer?.company || job.customer,
-      address: customer?.deliveryAddress || "",
+      address: job.jobDeliveryAddress || job.deliveryAddress || customer?.deliveryAddress || "",
       status: "Draft",
       items: [{ id: `dni-${Date.now()}-${job.id}`, description: job.title, quantity: 1 }],
     };
