@@ -5801,7 +5801,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [holidayApprovalErrors, setHolidayApprovalErrors] = useState({});
   const [stageTimeEntries, setStageTimeEntries] = useState(savedAppState.stageTimeEntries || []);
   const [stageActualHours, setStageActualHours] = useState({});
-  const [selectedJobId, setSelectedJobId] = useState(initialJobs[0].id);
+  const [selectedJobId, setSelectedJobId] = useState(() => (savedAppState.jobs || initialJobs)[0]?.id || "");
   const [weekStart, setWeekStart] = useState(today);
   const [search, setSearch] = useState("");
   const [activeRole, setActiveRole] = useState("operations");
