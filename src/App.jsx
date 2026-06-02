@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const APP_STORAGE_KEY = "jdfabs-operations-hq-live-v1";
-const LEGACY_APP_STORAGE_KEYS = ["jdfabs-operations-hq-v1"];
+const APP_STORAGE_KEY = "jdfabs-operations-hq-v1";
 const APP_BRAND_NAME = "OPHQ";
 const APP_BRAND_SUBTITLE = "One Platform. Total Control.";
 
@@ -386,26 +385,6 @@ function loadSavedAppState() {
   }
 }
 
-function normaliseLoadedAppState(rawState = {}) {
-  const defaults = getEmptyAppStateSnapshot();
-  const arrayKeys = [
-    "customers", "staff", "suppliers", "quotes", "plannerQuotePackages", "jobs", "purchaseOrders",
-    "deliveryNotes", "stockItems", "importLogs", "clockEntries", "holidays", "sickDays",
-    "stageTimeEntries", "customProducts", "storedDocuments", "auditLog", "recordLocks"
-  ];
-  const output = { ...defaults, ...(rawState && typeof rawState === "object" ? rawState : {}) };
-  arrayKeys.forEach((key) => {
-    output[key] = Array.isArray(rawState?.[key]) ? rawState[key] : defaults[key];
-  });
-  output.companySettings = { ...initialCompanySettings, ...(rawState?.companySettings || {}) };
-  output.pricingSchedule = Array.isArray(rawState?.pricingSchedule) && rawState.pricingSchedule.length ? rawState.pricingSchedule : defaultSteelPricingSchedule;
-  output.productivityRules = Array.isArray(rawState?.productivityRules) && rawState.productivityRules.length ? rawState.productivityRules : defaultProductivityRules;
-  output.profiles = Array.isArray(rawState?.profiles) && rawState.profiles.length ? rawState.profiles : initialProfiles;
-  output.pricingSaveMeta = rawState?.pricingSaveMeta || { savedAt: rawState?.savedAt || "", savedBy: "Operations", savedByRole: "operations" };
-  output.authStatus = rawState?.authStatus || "Login provider pending";
-  return output;
-}
-
 async function loadCloudAppState() {
   if (deploymentConfig.storageMode !== "cloud-api" || typeof fetch === "undefined") return null;
   const response = await fetch(`${deploymentConfig.apiBaseUrl}/snapshot`, { method: "GET" });
@@ -436,7 +415,6 @@ function saveAppState(snapshot) {
 function clearSavedAppState() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(APP_STORAGE_KEY);
-  LEGACY_APP_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
 }
 
 function downloadAppStateBackup(snapshot = {}, filePrefix = "jdfabs-ophq-backup") {
@@ -477,7 +455,12 @@ function getBackupPreviewSummary(snapshot = {}) {
   };
 }
 
-const initialStaff = [];
+const initialStaff = [
+  { id: "s1", name: "Jon", roles: ["Design", "Order Materials", "Cutting", "Drilling", "Fabrication"], rolePriorities: { Design: 1, "Order Materials": 3, Cutting: 1, Drilling: 5, Fabrication: 2 }, hoursPerDay: 8, pin: "1111" },
+  { id: "s2", name: "Mick", roles: ["Order Materials", "Drilling", "Fabrication", "Welding", "Inspection"], rolePriorities: { "Order Materials": 2, Drilling: 1, Fabrication: 1, Welding: 1, Inspection: 2 }, hoursPerDay: 8, pin: "2222" },
+  { id: "s3", name: "Sarah", roles: ["Order Materials", "Inspection", "Painting"], rolePriorities: { "Order Materials": 1, Inspection: 1, Painting: 1 }, hoursPerDay: 7.5, pin: "3333" },
+  { id: "s4", name: "Lee", roles: ["Order Materials", "Delivery"], rolePriorities: { "Order Materials": 4, Delivery: 1 }, hoursPerDay: 8, pin: "4444" },
+];
 
 function isStaffActive(person = {}) {
   return String(person.status || "Active") !== "Inactive";
@@ -960,9 +943,16 @@ const stageWeights = {
   Complete: 100,
 };
 
-const initialCustomers = [];
+const initialCustomers = [
+  { id: "c1", company: "Acme Estates", contact: "Jane Smith", email: "jane@example.com", phone: "01234 567890", deliveryAddress: "1 Delivery Street" },
+  { id: "c2", company: "Northgate Logistics", contact: "Tom Brown", email: "tom@northgate.example", phone: "01234 111222", deliveryAddress: "Northgate Warehouse" },
+  { id: "c3", company: "Private Client", contact: "Mr Green", email: "client@example.com", phone: "01234 333444", deliveryAddress: "Client Address" },
+];
 
-const initialSuppliers = [];
+const initialSuppliers = [
+  { id: "sup1", name: "Steel Supplier Ltd", contact: "Accounts", email: "sales@steel.example", phone: "01234 555666" },
+  { id: "sup2", name: "Powder Coating Co", contact: "Sarah", email: "orders@powder.example", phone: "01234 777888" },
+];
 
 const steelProductDatabase = [
   { id: "ub", name: "Universal Beam / RSJ", category: "Structural Sections", unit: "m", defaultGrade: "S355", inputs: ["sectionSize", "length", "quantity", "finish", "holes", "endPlates"] },
@@ -2692,11 +2682,103 @@ function runSelfTests() {
 
 runSelfTests();
 
-const initialQuotes = [];
+const initialQuotes = [
+  {
+    id: "q1",
+    quoteSequence: 1,
+    quoteNo: "QU-001",
+    customerId: "c1",
+    customer: "Acme Estates",
+    title: "Balcony balustrades",
+    date: "2026-05-12",
+    validUntil: "2026-06-11",
+    status: "Converted",
+    subtotal: 1000,
+    vatRate: 20,
+    total: 1200,
+    uploadedFileName: "",
+    items: [{ id: "qi1", description: "Fabrication work", quantity: 1, unitPrice: 1000 }],
+  },
+];
 
-const initialJobs = [];
+const initialJobs = [
+  {
+    id: "j1",
+    jobSequence: 1,
+    jobNo: "JD-001",
+    quoteId: "q1",
+    customerId: "c1",
+    customer: "Acme Estates",
+    title: "Balcony balustrades",
+    deadline: "2026-05-22",
+    start: "2026-05-13",
+    end: "2026-05-20",
+    stage: "Fabrication",
+    status: "In Production",
+    invoiceStatus: "Not Invoiced",
+    priority: "5",
+    estimatedHours: 72,
+    staffIds: ["s1", "s2"],
+    notes: "Stainless handrail sections to be checked before painting.",
+    materialsDue: "2026-05-16",
+    stageTasks: [
+      { id: "j1-design", stage: "Design", staffId: "s1", start: "2026-05-13", end: "2026-05-14", hours: 8, status: "Complete" },
+      { id: "j1-cutting", stage: "Cutting", staffId: "s1", start: "2026-05-14", end: "2026-05-15", hours: 12, status: "Complete" },
+      { id: "j1-fabrication", stage: "Fabrication", staffId: "s1", start: "2026-05-18", end: "2026-05-20", hours: 20, status: "In Progress" },
+      { id: "j1-welding", stage: "Welding", staffId: "s2", start: "2026-05-16", end: "2026-05-18", hours: 24, status: "In Progress" },
+    ],
+  },
+  {
+    id: "j2",
+    jobSequence: 2,
+    jobNo: "JD-002",
+    customerId: "c2",
+    customer: "Northgate Logistics",
+    title: "Warehouse safety barriers",
+    deadline: "2026-05-25",
+    start: "2026-05-15",
+    end: "2026-05-23",
+    stage: "Cutting",
+    status: "In Production",
+    invoiceStatus: "Not Invoiced",
+    priority: "3",
+    estimatedHours: 54,
+    staffIds: ["s2"],
+    notes: "Material due Friday morning.",
+    materialsDue: "2026-05-17",
+    stageTasks: [
+      { id: "j2-cutting", stage: "Cutting", staffId: "s2", start: "2026-05-15", end: "2026-05-17", hours: 18, status: "Not Started" },
+      { id: "j2-welding", stage: "Welding", staffId: "s2", start: "2026-05-18", end: "2026-05-21", hours: 28, status: "Not Started" },
+    ],
+  },
+  {
+    id: "j3",
+    jobSequence: 3,
+    jobNo: "JD-003",
+    customerId: "c3",
+    customer: "Private Client",
+    title: "Driveway gates",
+    deadline: "2026-05-30",
+    start: "2026-05-21",
+    end: "2026-05-28",
+    stage: "Design",
+    status: "In Production",
+    invoiceStatus: "Not Invoiced",
+    priority: "1",
+    estimatedHours: 38,
+    staffIds: ["s1", "s3"],
+    notes: "Awaiting final design approval.",
+    materialsDue: "2026-05-24",
+    stageTasks: [
+      { id: "j3-design", stage: "Design", staffId: "s1", start: "2026-05-21", end: "2026-05-22", hours: 8, status: "Not Started" },
+      { id: "j3-painting", stage: "Painting", staffId: "s3", start: "2026-05-26", end: "2026-05-28", hours: 16, status: "Not Started" },
+    ],
+  },
+];
 
-const initialPurchaseOrders = [];
+const initialPurchaseOrders = [
+  { id: "po1", poNo: "PO-00001", enquiryNo: "", documentKind: "Purchase Order", jobId: "j1", supplierId: "sup1", date: "2026-05-14", requiredBy: "2026-05-16", status: "Sent", subtotal: 250, vatRate: 20, total: 300, items: [{ id: "poi1", description: "Steel material", quantity: 1, unitCost: 250 }] },
+];
 
 const initialDeliveryNotes = [];
 const initialImportLogs = [];
@@ -2753,7 +2835,10 @@ const xeroCsvHeaders = [
 
 const maxCsvImportFileSizeBytes = 2 * 1024 * 1024;
 
-const initialStockItems = [];
+const initialStockItems = [
+  { id: "stock-1", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 6, quantity: 2, location: "Rack A", status: "In Stock", allocatedJobId: "", notes: "Stock item" },
+  { id: "stock-2", productId: "plate", sectionSize: "10mm", grade: "S275", finish: "Self colour", length: 1, width: 250, quantity: 4, location: "Plate bay", status: "In Stock", allocatedJobId: "", notes: "250mm square base plate blanks" },
+];
 
 function getStaffPin(person = {}) {
   const demoPinsById = { s1: "1111", s2: "2222", s3: "3333", s4: "4444" };
@@ -5273,7 +5358,7 @@ function DeploymentFoundationsPanel({ cloudSyncStatus, storedDocuments, profiles
   );
 }
 
-function SettingsTab({ companySettings, setCompanySettings, customers, suppliers, importState, setImportState, importLogs, onFileSelected, onConfirmImport, onResetImport, onResetLocalSavedData, onPrepareLiveData, onExportLocalBackup, onBackupFileSelected, backupRestorePreview, backupRestoreError, onConfirmBackupRestore, onClearBackupRestore, cloudSyncStatus, storedDocuments, profiles, auditLog, authStatus, recordLocks }) {
+function SettingsTab({ companySettings, setCompanySettings, customers, suppliers, importState, setImportState, importLogs, onFileSelected, onConfirmImport, onResetImport, onResetLocalSavedData, onExportLocalBackup, onBackupFileSelected, backupRestorePreview, backupRestoreError, onConfirmBackupRestore, onClearBackupRestore, cloudSyncStatus, storedDocuments, profiles, auditLog, authStatus, recordLocks }) {
   const [settingsSection, setSettingsSection] = useState("company");
 
   return (
@@ -5289,7 +5374,6 @@ function SettingsTab({ companySettings, setCompanySettings, customers, suppliers
             Import backup
             <input type="file" accept="application/json,.json" className="hidden" onChange={onBackupFileSelected} />
           </label>
-          <button className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-800" onClick={onPrepareLiveData}>Prepare live data</button>
           <button className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-700" onClick={onResetLocalSavedData}>Reset local saved data</button>
         </div>
         {backupRestoreError ? <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{backupRestoreError}</p> : null}
@@ -5789,36 +5873,9 @@ function DeliveryNotePreview({ note, job, customer, companySettings }) {
   );
 }
 
-class AppRuntimeErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-  componentDidCatch(error, info) {
-    try { console.error("OPHQ runtime error", error, info); } catch (_) {}
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="min-h-screen bg-slate-100 p-6 text-slate-900">
-          <div className="mx-auto max-w-3xl rounded-3xl bg-white p-6 shadow-sm">
-            <h1 className="text-2xl font-black text-red-700">OPHQ could not open this screen</h1>
-            <p className="mt-2 text-sm text-slate-700">A clean live startup fallback caught an error instead of showing a blank screen. Export or clear browser data only after saving a backup.</p>
-            <pre className="mt-4 overflow-auto rounded-2xl bg-red-50 p-4 text-xs text-red-800">{String(this.state.error?.message || this.state.error)}</pre>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function FabricationProductionPlannerIntegratedInner() {
+export default function FabricationProductionPlannerIntegrated() {
   const today = toIso(new Date());
-  const savedAppState = useMemo(() => normaliseLoadedAppState(loadSavedAppState()), []);
+  const savedAppState = useMemo(() => loadSavedAppState(), []);
   const [customers, setCustomers] = useState(savedAppState.customers || initialCustomers);
   const [staff, setStaff] = useState(() => (savedAppState.staff || initialStaff).map((person) => normaliseStaffRolePriorities({ ...person, status: person.status || "Active", pin: getStaffPin(person) })));
   const [suppliers, setSuppliers] = useState(savedAppState.suppliers || initialSuppliers);
@@ -5848,7 +5905,7 @@ function FabricationProductionPlannerIntegratedInner() {
   const [holidayApprovalErrors, setHolidayApprovalErrors] = useState({});
   const [stageTimeEntries, setStageTimeEntries] = useState(savedAppState.stageTimeEntries || []);
   const [stageActualHours, setStageActualHours] = useState({});
-  const [selectedJobId, setSelectedJobId] = useState(() => (savedAppState.jobs || initialJobs)[0]?.id || "");
+  const [selectedJobId, setSelectedJobId] = useState(initialJobs[0].id);
   const [weekStart, setWeekStart] = useState(today);
   const [search, setSearch] = useState("");
   const [activeRole, setActiveRole] = useState("operations");
@@ -5868,7 +5925,7 @@ function FabricationProductionPlannerIntegratedInner() {
   const [auditLog, setAuditLog] = useState(savedAppState.auditLog || []);
   const [authStatus, setAuthStatus] = useState("Login provider pending");
   const [recordLocks, setRecordLocks] = useState(savedAppState.recordLocks || []);
-  const [newQuote, setNewQuote] = useState({ customerId: customers[0]?.id || "", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
+  const [newQuote, setNewQuote] = useState({ customerId: "c1", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
   const [takeoffForm, setTakeoffForm] = useState({ productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Primed", length: 1, width: "", thickness: "", quantity: 1, holes: 0, plates: 0, notes: "", unitPrice: 0 });
   const [takeoffLines, setTakeoffLines] = useState([]);
   const [takeoffAiInput, setTakeoffAiInput] = useState("");
@@ -5877,8 +5934,8 @@ function FabricationProductionPlannerIntegratedInner() {
   const [takeoffImportStatus, setTakeoffImportStatus] = useState("");
   const [newStockItem, setNewStockItem] = useState({ productId: "ub", sectionSize: "", grade: "S355", finish: "Self colour", length: 6, width: "", quantity: 1, location: "", status: "In Stock", allocatedJobId: "", purchaseDocumentNo: "", notes: "" });
   const [newPo, setNewPo] = useState({
-    jobId: jobs[0]?.id || "",
-    supplierId: suppliers[0]?.id || "",
+    jobId: "j1",
+    supplierId: "sup1",
     requiredBy: toIso(addDays(new Date(), 7)),
     lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: 6, finish: "Self colour" }, 1, 1)],
   });
@@ -7414,103 +7471,6 @@ function FabricationProductionPlannerIntegratedInner() {
     setBackupRestoreError("");
   }
 
-  function prepareLiveDataForUse() {
-    if (activeRole !== "operations") {
-      setActionStatus("Only Operations can prepare live data.");
-      return;
-    }
-    const firstConfirm = window.confirm("Prepare OPHQ for live use? This will export a backup, then remove sample/demo customers, suppliers, staff, quotes, jobs, purchasing, delivery notes, stock, clocking, absences and generated documents. Pricing, productivity rules, company settings, roles and app settings will be kept.");
-    if (!firstConfirm) return;
-    const secondConfirm = window.confirm("Final check: make sure you have already saved a backup. Press OK to download another backup and clear demo/live-operational records now.");
-    if (!secondConfirm) return;
-
-    const backupSnapshot = {
-      customers,
-      staff,
-      suppliers,
-      quotes,
-      plannerQuotePackages,
-      jobs,
-      purchaseOrders,
-      deliveryNotes,
-      stockItems,
-      importLogs,
-      companySettings,
-      clockEntries,
-      holidays,
-      sickDays,
-      stageTimeEntries,
-      pricingSchedule,
-      pricingSaveMeta,
-      productivityRules,
-      customProducts,
-      storedDocuments,
-      profiles,
-      auditLog,
-      authStatus,
-      recordLocks,
-      savedAt: new Date().toISOString(),
-    };
-    downloadAppStateBackup(backupSnapshot, "jdfabs-ophq-pre-live-cleanup-backup");
-
-    const cleanupAudit = createAuditLogEntry({ user, action: "prepare_live_data", resource: "app_state", resourceId: "live-cleanup", outcome: "success", notes: "Operations removed sample/demo operational records for live use. Pricing, productivity rules, company settings, profiles and app setup were preserved." });
-
-    const cleanedAuditLog = [cleanupAudit, ...auditLog].slice(0, 500);
-    const cleanedSnapshot = {
-      customers: [],
-      staff: [],
-      suppliers: [],
-      quotes: [],
-      plannerQuotePackages: [],
-      jobs: [],
-      purchaseOrders: [],
-      deliveryNotes: [],
-      stockItems: [],
-      importLogs: [],
-      companySettings,
-      clockEntries: [],
-      holidays: [],
-      sickDays: [],
-      stageTimeEntries: [],
-      pricingSchedule,
-      pricingSaveMeta,
-      productivityRules,
-      customProducts,
-      storedDocuments: [],
-      profiles,
-      auditLog: cleanedAuditLog,
-      authStatus,
-      recordLocks: [],
-      savedAt: new Date().toISOString(),
-    };
-
-    LEGACY_APP_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
-    saveAppState(cleanedSnapshot);
-    if (deploymentConfig.storageMode === "cloud-api") {
-      saveCloudAppState(cleanedSnapshot).catch(() => null);
-    }
-
-    setCustomers([]);
-    setStaff([]);
-    setSuppliers([]);
-    setQuotes([]);
-    setPlannerQuotePackages([]);
-    setJobs([]);
-    setPurchaseOrders([]);
-    setDeliveryNotes([]);
-    setStockItems([]);
-    setImportLogs([]);
-    setClockEntries([]);
-    setHolidays([]);
-    setSickDays([]);
-    setStageTimeEntries([]);
-    setStoredDocuments([]);
-    setRecordLocks([]);
-    setAuditLog(cleanedAuditLog);
-    setActionStatus("Live data prepared and saved. Sample/demo operational records removed. Pricing, settings, roles and rules were preserved. OPHQ will reload from the cleaned state.");
-    window.setTimeout(() => window.location.reload(), 400);
-  }
-
   function resetLocalSavedData() {
     clearSavedAppState();
     window.location.reload();
@@ -7715,7 +7675,6 @@ function FabricationProductionPlannerIntegratedInner() {
             onConfirmImport={confirmXeroCsvImport}
             onResetImport={resetXeroCsvImport}
             onResetLocalSavedData={resetLocalSavedData}
-            onPrepareLiveData={prepareLiveDataForUse}
             onExportLocalBackup={exportLocalBackup}
             onBackupFileSelected={handleBackupFileSelected}
             backupRestorePreview={backupRestorePreview}
@@ -8457,13 +8416,5 @@ function FabricationProductionPlannerIntegratedInner() {
         </div>
       </div>
     </div>
-  );
-}
-
-export default function FabricationProductionPlannerIntegrated() {
-  return (
-    <AppRuntimeErrorBoundary>
-      <FabricationProductionPlannerIntegratedInner />
-    </AppRuntimeErrorBoundary>
   );
 }
