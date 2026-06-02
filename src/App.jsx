@@ -7513,6 +7513,40 @@ export default function FabricationProductionPlannerIntegrated() {
 
     const cleanupAudit = createAuditLogEntry({ user, action: "prepare_live_data", resource: "app_state", resourceId: "live-cleanup", outcome: "success", notes: "Operations removed sample/demo operational records for live use. Pricing, productivity rules, company settings, profiles and app setup were preserved." });
 
+    const cleanedAuditLog = [cleanupAudit, ...auditLog].slice(0, 500);
+    const cleanedSnapshot = {
+      customers: [],
+      staff: [],
+      suppliers: [],
+      quotes: [],
+      plannerQuotePackages: [],
+      jobs: [],
+      purchaseOrders: [],
+      deliveryNotes: [],
+      stockItems: [],
+      importLogs: [],
+      companySettings,
+      clockEntries: [],
+      holidays: [],
+      sickDays: [],
+      stageTimeEntries: [],
+      pricingSchedule,
+      pricingSaveMeta,
+      productivityRules,
+      customProducts,
+      storedDocuments: [],
+      profiles,
+      auditLog: cleanedAuditLog,
+      authStatus,
+      recordLocks: [],
+      savedAt: new Date().toISOString(),
+    };
+
+    saveAppState(cleanedSnapshot);
+    if (deploymentConfig.storageMode === "cloud-api") {
+      saveCloudAppState(cleanedSnapshot).catch(() => null);
+    }
+
     setCustomers([]);
     setStaff([]);
     setSuppliers([]);
@@ -7529,8 +7563,9 @@ export default function FabricationProductionPlannerIntegrated() {
     setStageTimeEntries([]);
     setStoredDocuments([]);
     setRecordLocks([]);
-    setAuditLog((current) => [cleanupAudit, ...current].slice(0, 500));
-    setActionStatus("Live data prepared. Sample/demo operational records removed. Pricing, settings, roles and rules were preserved. Add/import real customers, suppliers, staff and stock next.");
+    setAuditLog(cleanedAuditLog);
+    setActionStatus("Live data prepared and saved. Sample/demo operational records removed. Pricing, settings, roles and rules were preserved. OPHQ will reload from the cleaned state.");
+    window.setTimeout(() => window.location.reload(), 400);
   }
 
   function resetLocalSavedData() {
