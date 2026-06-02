@@ -34,3 +34,4 @@
 
 - 2026-06-02: [bug fix + database/schema + file handling] Fixed Prepare live data cleanup so the cleaned state is explicitly saved and reloaded after backup. Pricing impact: none. Tests: backup export, cleanup persistence, reload check.
 - 2026-06-02: [bug fix + database/schema + file handling] Changed OPHQ to start from a clean live data state, moved browser storage to a new live key, removed demo default customers/suppliers/staff/jobs/quotes/POs/stock, and made cleanup remove legacy local-storage data. Pricing impact: none. Tests: Vite build passed; clean-start state should preserve pricing/settings/profiles only.
+- 2026-06-02: [bug fix + database/schema] Fix clean live start blank screen by allowing no initial jobs. Pricing impact: none. Tests: clean boot build and empty live state.
