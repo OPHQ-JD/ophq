@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const APP_STORAGE_KEY = "jdfabs-operations-hq-v1";
+const APP_STORAGE_KEY = "jdfabs-operations-hq-live-v1";
+const LEGACY_APP_STORAGE_KEYS = ["jdfabs-operations-hq-v1"];
 const APP_BRAND_NAME = "OPHQ";
 const APP_BRAND_SUBTITLE = "One Platform. Total Control.";
 
@@ -415,6 +416,7 @@ function saveAppState(snapshot) {
 function clearSavedAppState() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(APP_STORAGE_KEY);
+  LEGACY_APP_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
 }
 
 function downloadAppStateBackup(snapshot = {}, filePrefix = "jdfabs-ophq-backup") {
@@ -455,12 +457,7 @@ function getBackupPreviewSummary(snapshot = {}) {
   };
 }
 
-const initialStaff = [
-  { id: "s1", name: "Jon", roles: ["Design", "Order Materials", "Cutting", "Drilling", "Fabrication"], rolePriorities: { Design: 1, "Order Materials": 3, Cutting: 1, Drilling: 5, Fabrication: 2 }, hoursPerDay: 8, pin: "1111" },
-  { id: "s2", name: "Mick", roles: ["Order Materials", "Drilling", "Fabrication", "Welding", "Inspection"], rolePriorities: { "Order Materials": 2, Drilling: 1, Fabrication: 1, Welding: 1, Inspection: 2 }, hoursPerDay: 8, pin: "2222" },
-  { id: "s3", name: "Sarah", roles: ["Order Materials", "Inspection", "Painting"], rolePriorities: { "Order Materials": 1, Inspection: 1, Painting: 1 }, hoursPerDay: 7.5, pin: "3333" },
-  { id: "s4", name: "Lee", roles: ["Order Materials", "Delivery"], rolePriorities: { "Order Materials": 4, Delivery: 1 }, hoursPerDay: 8, pin: "4444" },
-];
+const initialStaff = [];
 
 function isStaffActive(person = {}) {
   return String(person.status || "Active") !== "Inactive";
@@ -943,16 +940,9 @@ const stageWeights = {
   Complete: 100,
 };
 
-const initialCustomers = [
-  { id: "c1", company: "Acme Estates", contact: "Jane Smith", email: "jane@example.com", phone: "01234 567890", deliveryAddress: "1 Delivery Street" },
-  { id: "c2", company: "Northgate Logistics", contact: "Tom Brown", email: "tom@northgate.example", phone: "01234 111222", deliveryAddress: "Northgate Warehouse" },
-  { id: "c3", company: "Private Client", contact: "Mr Green", email: "client@example.com", phone: "01234 333444", deliveryAddress: "Client Address" },
-];
+const initialCustomers = [];
 
-const initialSuppliers = [
-  { id: "sup1", name: "Steel Supplier Ltd", contact: "Accounts", email: "sales@steel.example", phone: "01234 555666" },
-  { id: "sup2", name: "Powder Coating Co", contact: "Sarah", email: "orders@powder.example", phone: "01234 777888" },
-];
+const initialSuppliers = [];
 
 const steelProductDatabase = [
   { id: "ub", name: "Universal Beam / RSJ", category: "Structural Sections", unit: "m", defaultGrade: "S355", inputs: ["sectionSize", "length", "quantity", "finish", "holes", "endPlates"] },
@@ -2682,103 +2672,11 @@ function runSelfTests() {
 
 runSelfTests();
 
-const initialQuotes = [
-  {
-    id: "q1",
-    quoteSequence: 1,
-    quoteNo: "QU-001",
-    customerId: "c1",
-    customer: "Acme Estates",
-    title: "Balcony balustrades",
-    date: "2026-05-12",
-    validUntil: "2026-06-11",
-    status: "Converted",
-    subtotal: 1000,
-    vatRate: 20,
-    total: 1200,
-    uploadedFileName: "",
-    items: [{ id: "qi1", description: "Fabrication work", quantity: 1, unitPrice: 1000 }],
-  },
-];
+const initialQuotes = [];
 
-const initialJobs = [
-  {
-    id: "j1",
-    jobSequence: 1,
-    jobNo: "JD-001",
-    quoteId: "q1",
-    customerId: "c1",
-    customer: "Acme Estates",
-    title: "Balcony balustrades",
-    deadline: "2026-05-22",
-    start: "2026-05-13",
-    end: "2026-05-20",
-    stage: "Fabrication",
-    status: "In Production",
-    invoiceStatus: "Not Invoiced",
-    priority: "5",
-    estimatedHours: 72,
-    staffIds: ["s1", "s2"],
-    notes: "Stainless handrail sections to be checked before painting.",
-    materialsDue: "2026-05-16",
-    stageTasks: [
-      { id: "j1-design", stage: "Design", staffId: "s1", start: "2026-05-13", end: "2026-05-14", hours: 8, status: "Complete" },
-      { id: "j1-cutting", stage: "Cutting", staffId: "s1", start: "2026-05-14", end: "2026-05-15", hours: 12, status: "Complete" },
-      { id: "j1-fabrication", stage: "Fabrication", staffId: "s1", start: "2026-05-18", end: "2026-05-20", hours: 20, status: "In Progress" },
-      { id: "j1-welding", stage: "Welding", staffId: "s2", start: "2026-05-16", end: "2026-05-18", hours: 24, status: "In Progress" },
-    ],
-  },
-  {
-    id: "j2",
-    jobSequence: 2,
-    jobNo: "JD-002",
-    customerId: "c2",
-    customer: "Northgate Logistics",
-    title: "Warehouse safety barriers",
-    deadline: "2026-05-25",
-    start: "2026-05-15",
-    end: "2026-05-23",
-    stage: "Cutting",
-    status: "In Production",
-    invoiceStatus: "Not Invoiced",
-    priority: "3",
-    estimatedHours: 54,
-    staffIds: ["s2"],
-    notes: "Material due Friday morning.",
-    materialsDue: "2026-05-17",
-    stageTasks: [
-      { id: "j2-cutting", stage: "Cutting", staffId: "s2", start: "2026-05-15", end: "2026-05-17", hours: 18, status: "Not Started" },
-      { id: "j2-welding", stage: "Welding", staffId: "s2", start: "2026-05-18", end: "2026-05-21", hours: 28, status: "Not Started" },
-    ],
-  },
-  {
-    id: "j3",
-    jobSequence: 3,
-    jobNo: "JD-003",
-    customerId: "c3",
-    customer: "Private Client",
-    title: "Driveway gates",
-    deadline: "2026-05-30",
-    start: "2026-05-21",
-    end: "2026-05-28",
-    stage: "Design",
-    status: "In Production",
-    invoiceStatus: "Not Invoiced",
-    priority: "1",
-    estimatedHours: 38,
-    staffIds: ["s1", "s3"],
-    notes: "Awaiting final design approval.",
-    materialsDue: "2026-05-24",
-    stageTasks: [
-      { id: "j3-design", stage: "Design", staffId: "s1", start: "2026-05-21", end: "2026-05-22", hours: 8, status: "Not Started" },
-      { id: "j3-painting", stage: "Painting", staffId: "s3", start: "2026-05-26", end: "2026-05-28", hours: 16, status: "Not Started" },
-    ],
-  },
-];
+const initialJobs = [];
 
-const initialPurchaseOrders = [
-  { id: "po1", poNo: "PO-00001", enquiryNo: "", documentKind: "Purchase Order", jobId: "j1", supplierId: "sup1", date: "2026-05-14", requiredBy: "2026-05-16", status: "Sent", subtotal: 250, vatRate: 20, total: 300, items: [{ id: "poi1", description: "Steel material", quantity: 1, unitCost: 250 }] },
-];
+const initialPurchaseOrders = [];
 
 const initialDeliveryNotes = [];
 const initialImportLogs = [];
@@ -2835,10 +2733,7 @@ const xeroCsvHeaders = [
 
 const maxCsvImportFileSizeBytes = 2 * 1024 * 1024;
 
-const initialStockItems = [
-  { id: "stock-1", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 6, quantity: 2, location: "Rack A", status: "In Stock", allocatedJobId: "", notes: "Stock item" },
-  { id: "stock-2", productId: "plate", sectionSize: "10mm", grade: "S275", finish: "Self colour", length: 1, width: 250, quantity: 4, location: "Plate bay", status: "In Stock", allocatedJobId: "", notes: "250mm square base plate blanks" },
-];
+const initialStockItems = [];
 
 function getStaffPin(person = {}) {
   const demoPinsById = { s1: "1111", s2: "2222", s3: "3333", s4: "4444" };
@@ -7542,6 +7437,7 @@ export default function FabricationProductionPlannerIntegrated() {
       savedAt: new Date().toISOString(),
     };
 
+    LEGACY_APP_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
     saveAppState(cleanedSnapshot);
     if (deploymentConfig.storageMode === "cloud-api") {
       saveCloudAppState(cleanedSnapshot).catch(() => null);
