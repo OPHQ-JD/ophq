@@ -5358,7 +5358,7 @@ function DeploymentFoundationsPanel({ cloudSyncStatus, storedDocuments, profiles
   );
 }
 
-function SettingsTab({ companySettings, setCompanySettings, customers, suppliers, importState, setImportState, importLogs, onFileSelected, onConfirmImport, onResetImport, onResetLocalSavedData, onExportLocalBackup, onBackupFileSelected, backupRestorePreview, backupRestoreError, onConfirmBackupRestore, onClearBackupRestore, cloudSyncStatus, storedDocuments, profiles, auditLog, authStatus, recordLocks }) {
+function SettingsTab({ companySettings, setCompanySettings, customers, suppliers, importState, setImportState, importLogs, onFileSelected, onConfirmImport, onResetImport, onResetLocalSavedData, onPrepareLiveData, onExportLocalBackup, onBackupFileSelected, backupRestorePreview, backupRestoreError, onConfirmBackupRestore, onClearBackupRestore, cloudSyncStatus, storedDocuments, profiles, auditLog, authStatus, recordLocks }) {
   const [settingsSection, setSettingsSection] = useState("company");
 
   return (
@@ -5374,6 +5374,7 @@ function SettingsTab({ companySettings, setCompanySettings, customers, suppliers
             Import backup
             <input type="file" accept="application/json,.json" className="hidden" onChange={onBackupFileSelected} />
           </label>
+          <button className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-800" onClick={onPrepareLiveData}>Prepare live data</button>
           <button className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-700" onClick={onResetLocalSavedData}>Reset local saved data</button>
         </div>
         {backupRestoreError ? <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{backupRestoreError}</p> : null}
@@ -7471,6 +7472,67 @@ export default function FabricationProductionPlannerIntegrated() {
     setBackupRestoreError("");
   }
 
+  function prepareLiveDataForUse() {
+    if (activeRole !== "operations") {
+      setActionStatus("Only Operations can prepare live data.");
+      return;
+    }
+    const firstConfirm = window.confirm("Prepare OPHQ for live use? This will export a backup, then remove sample/demo customers, suppliers, staff, quotes, jobs, purchasing, delivery notes, stock, clocking, absences and generated documents. Pricing, productivity rules, company settings, roles and app settings will be kept.");
+    if (!firstConfirm) return;
+    const secondConfirm = window.confirm("Final check: make sure you have already saved a backup. Press OK to download another backup and clear demo/live-operational records now.");
+    if (!secondConfirm) return;
+
+    const backupSnapshot = {
+      customers,
+      staff,
+      suppliers,
+      quotes,
+      plannerQuotePackages,
+      jobs,
+      purchaseOrders,
+      deliveryNotes,
+      stockItems,
+      importLogs,
+      companySettings,
+      clockEntries,
+      holidays,
+      sickDays,
+      stageTimeEntries,
+      pricingSchedule,
+      pricingSaveMeta,
+      productivityRules,
+      customProducts,
+      storedDocuments,
+      profiles,
+      auditLog,
+      authStatus,
+      recordLocks,
+      savedAt: new Date().toISOString(),
+    };
+    downloadAppStateBackup(backupSnapshot, "jdfabs-ophq-pre-live-cleanup-backup");
+
+    const cleanupAudit = createAuditLogEntry({ user, action: "prepare_live_data", resource: "app_state", resourceId: "live-cleanup", outcome: "success", notes: "Operations removed sample/demo operational records for live use. Pricing, productivity rules, company settings, profiles and app setup were preserved." });
+
+    setCustomers([]);
+    setStaff([]);
+    setSuppliers([]);
+    setQuotes([]);
+    setPlannerQuotePackages([]);
+    setJobs([]);
+    setPurchaseOrders([]);
+    setDeliveryNotes([]);
+    setStockItems([]);
+    setImportLogs([]);
+    setClockEntries([]);
+    setHolidays([]);
+    setSickDays([]);
+    setStageTimeEntries([]);
+    setStoredDocuments([]);
+    setRecordLocks([]);
+    setAuditLog((current) => [cleanupAudit, ...current].slice(0, 500));
+    setActionStatus("Live data prepared. Sample/demo operational records removed. Pricing, settings, roles and rules were preserved. Add/import real customers, suppliers, staff and stock next.");
+  }
+
   function resetLocalSavedData() {
     clearSavedAppState();
     window.location.reload();
@@ -7675,6 +7737,7 @@ export default function FabricationProductionPlannerIntegrated() {
             onConfirmImport={confirmXeroCsvImport}
             onResetImport={resetXeroCsvImport}
             onResetLocalSavedData={resetLocalSavedData}
+            onPrepareLiveData={prepareLiveDataForUse}
             onExportLocalBackup={exportLocalBackup}
             onBackupFileSelected={handleBackupFileSelected}
             backupRestorePreview={backupRestorePreview}
