@@ -386,6 +386,26 @@ function loadSavedAppState() {
   }
 }
 
+function normaliseLoadedAppState(rawState = {}) {
+  const defaults = getEmptyAppStateSnapshot();
+  const arrayKeys = [
+    "customers", "staff", "suppliers", "quotes", "plannerQuotePackages", "jobs", "purchaseOrders",
+    "deliveryNotes", "stockItems", "importLogs", "clockEntries", "holidays", "sickDays",
+    "stageTimeEntries", "customProducts", "storedDocuments", "auditLog", "recordLocks"
+  ];
+  const output = { ...defaults, ...(rawState && typeof rawState === "object" ? rawState : {}) };
+  arrayKeys.forEach((key) => {
+    output[key] = Array.isArray(rawState?.[key]) ? rawState[key] : defaults[key];
+  });
+  output.companySettings = { ...initialCompanySettings, ...(rawState?.companySettings || {}) };
+  output.pricingSchedule = Array.isArray(rawState?.pricingSchedule) && rawState.pricingSchedule.length ? rawState.pricingSchedule : defaultSteelPricingSchedule;
+  output.productivityRules = Array.isArray(rawState?.productivityRules) && rawState.productivityRules.length ? rawState.productivityRules : defaultProductivityRules;
+  output.profiles = Array.isArray(rawState?.profiles) && rawState.profiles.length ? rawState.profiles : initialProfiles;
+  output.pricingSaveMeta = rawState?.pricingSaveMeta || { savedAt: rawState?.savedAt || "", savedBy: "Operations", savedByRole: "operations" };
+  output.authStatus = rawState?.authStatus || "Login provider pending";
+  return output;
+}
+
 async function loadCloudAppState() {
   if (deploymentConfig.storageMode !== "cloud-api" || typeof fetch === "undefined") return null;
   const response = await fetch(`${deploymentConfig.apiBaseUrl}/snapshot`, { method: "GET" });
@@ -5769,9 +5789,36 @@ function DeliveryNotePreview({ note, job, customer, companySettings }) {
   );
 }
 
-export default function FabricationProductionPlannerIntegrated() {
+class AppRuntimeErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    try { console.error("OPHQ runtime error", error, info); } catch (_) {}
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-slate-100 p-6 text-slate-900">
+          <div className="mx-auto max-w-3xl rounded-3xl bg-white p-6 shadow-sm">
+            <h1 className="text-2xl font-black text-red-700">OPHQ could not open this screen</h1>
+            <p className="mt-2 text-sm text-slate-700">A clean live startup fallback caught an error instead of showing a blank screen. Export or clear browser data only after saving a backup.</p>
+            <pre className="mt-4 overflow-auto rounded-2xl bg-red-50 p-4 text-xs text-red-800">{String(this.state.error?.message || this.state.error)}</pre>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function FabricationProductionPlannerIntegratedInner() {
   const today = toIso(new Date());
-  const savedAppState = useMemo(() => loadSavedAppState(), []);
+  const savedAppState = useMemo(() => normaliseLoadedAppState(loadSavedAppState()), []);
   const [customers, setCustomers] = useState(savedAppState.customers || initialCustomers);
   const [staff, setStaff] = useState(() => (savedAppState.staff || initialStaff).map((person) => normaliseStaffRolePriorities({ ...person, status: person.status || "Active", pin: getStaffPin(person) })));
   const [suppliers, setSuppliers] = useState(savedAppState.suppliers || initialSuppliers);
@@ -5821,7 +5868,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [auditLog, setAuditLog] = useState(savedAppState.auditLog || []);
   const [authStatus, setAuthStatus] = useState("Login provider pending");
   const [recordLocks, setRecordLocks] = useState(savedAppState.recordLocks || []);
-  const [newQuote, setNewQuote] = useState({ customerId: "c1", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
+  const [newQuote, setNewQuote] = useState({ customerId: customers[0]?.id || "", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
   const [takeoffForm, setTakeoffForm] = useState({ productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Primed", length: 1, width: "", thickness: "", quantity: 1, holes: 0, plates: 0, notes: "", unitPrice: 0 });
   const [takeoffLines, setTakeoffLines] = useState([]);
   const [takeoffAiInput, setTakeoffAiInput] = useState("");
@@ -5830,8 +5877,8 @@ export default function FabricationProductionPlannerIntegrated() {
   const [takeoffImportStatus, setTakeoffImportStatus] = useState("");
   const [newStockItem, setNewStockItem] = useState({ productId: "ub", sectionSize: "", grade: "S355", finish: "Self colour", length: 6, width: "", quantity: 1, location: "", status: "In Stock", allocatedJobId: "", purchaseDocumentNo: "", notes: "" });
   const [newPo, setNewPo] = useState({
-    jobId: "j1",
-    supplierId: "sup1",
+    jobId: jobs[0]?.id || "",
+    supplierId: suppliers[0]?.id || "",
     requiredBy: toIso(addDays(new Date(), 7)),
     lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: 6, finish: "Self colour" }, 1, 1)],
   });
@@ -8410,5 +8457,13 @@ export default function FabricationProductionPlannerIntegrated() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function FabricationProductionPlannerIntegrated() {
+  return (
+    <AppRuntimeErrorBoundary>
+      <FabricationProductionPlannerIntegratedInner />
+    </AppRuntimeErrorBoundary>
   );
 }
