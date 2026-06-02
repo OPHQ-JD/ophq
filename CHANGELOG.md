@@ -31,3 +31,5 @@
 - 2026-06-01: [database/schema + planner workflow + file handling + UI/layout] Added job-specific delivery address at quote stage and carried it through quote approval, job creation and delivery notes. Pricing impact: none. Tests: quote save/reload, job conversion, delivery note address fallback.
 - 2026-06-02: [authentication/user role + stock/inventory logic + UI/layout] Allowed Staff users to add stock inventory records and removed dashboard heading stats from Sales CRM view. Pricing impact: none. Tests: staff stock add, sales CRM UI, operations regression.
 - 2026-06-02: [database/schema + authentication/user role + UI/layout] Added Operations-only Prepare Live Data cleanup that exports a backup then removes demo/sample operational records while preserving pricing, productivity rules, company settings, profiles and app setup. Pricing impact: none. Tests: build, backup export, cleanup button visibility/action review.
+
+- 2026-06-02: [bug fix + database/schema + file handling] Fixed Prepare live data cleanup so the cleaned state is explicitly saved and reloaded after backup. Pricing impact: none. Tests: backup export, cleanup persistence, reload check.
