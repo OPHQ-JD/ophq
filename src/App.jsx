@@ -133,7 +133,7 @@ const backendPermissionMap = {
   staff: {
     label: "Workshop",
     canRead: ["assigned_jobs", "job_sheets", "delivery_calendar", "own_clock_entries", "own_holiday_requests", "relevant_stored_documents", "stock_items"],
-    canCreate: ["own_clock_entries", "own_holiday_requests", "job_progress_updates"],
+    canCreate: ["own_clock_entries", "own_holiday_requests", "job_progress_updates", "stock_items"],
     canUpdate: ["assigned_job_task_progress", "own_open_clock_entries", "own_pending_holiday_requests", "stock_items"],
     canDelete: [],
     restrictions: ["no_pricing", "no_quote_editing", "no_job_creation", "no_purchase_order_creation", "no_approval_controls", "no_admin_settings"],
@@ -7506,7 +7506,7 @@ export default function FabricationProductionPlannerIntegrated() {
           </div>
         </div>
 
-        {activeTab !== "clocking" && activeTab !== "holiday" && activeTab !== "stock" && activeTab !== "productivity" && activeTab !== "settings" ? (
+        {activeTab !== "clocking" && activeTab !== "holiday" && activeTab !== "stock" && activeTab !== "productivity" && activeTab !== "settings" && !(activeRole === "sales" && activeTab === "customers") ? (
           <div className={dashboardClass}>
             <StatCard label="Active jobs" value={stats.activeJobs} tone="dark" />
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Planned hours" value={stats.plannedHours} /> : null}
