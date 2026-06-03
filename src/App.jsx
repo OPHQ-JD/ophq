@@ -1243,19 +1243,50 @@ function calculateTotal(items, vatRate = 20, priceKey = "unitPrice") {
 }
 
 function getProductDatabase(customProducts = []) {
-  return [...steelProductDatabase, ...(customProducts || [])];
+  const customRows = customProducts || [];
+  const mergedBaseProducts = steelProductDatabase.map((baseProduct) => {
+    const extensions = customRows.filter((product) => product.id === baseProduct.id || product.extendsProductId === baseProduct.id);
+    if (!extensions.length) return baseProduct;
+    const optionRows = [...(baseProduct.optionRows || [])];
+    const sectionOptions = [...(baseProduct.sectionOptions || [])];
+    extensions.forEach((extension) => {
+      (extension.optionRows || []).forEach((row) => {
+        const size = String(row.size || row.sectionSize || "").trim();
+        if (!size) return;
+        if (!sectionOptions.some((item) => String(item).toLowerCase() === size.toLowerCase())) sectionOptions.push(size);
+        if (!optionRows.some((item) => String(item.size || item.sectionSize || "").toLowerCase() === size.toLowerCase())) optionRows.push({ ...row, size });
+      });
+      (extension.sectionOptions || []).forEach((sizeValue) => {
+        const size = String(sizeValue || "").trim();
+        if (size && !sectionOptions.some((item) => String(item).toLowerCase() === size.toLowerCase())) sectionOptions.push(size);
+      });
+    });
+    return {
+      ...baseProduct,
+      sectionOptions,
+      optionRows,
+      unit: extensions.find((item) => item.unit)?.unit || baseProduct.unit,
+      defaultGrade: extensions.find((item) => item.defaultGrade)?.defaultGrade || baseProduct.defaultGrade,
+      productionMinutes: Number(extensions.find((item) => Number(item.productionMinutes || 0) > 0)?.productionMinutes || baseProduct.productionMinutes || 0),
+    };
+  });
+  const baseIds = new Set(steelProductDatabase.map((product) => product.id));
+  const standaloneCustomProducts = customRows.filter((product) => !baseIds.has(product.id) && !product.extendsProductId);
+  return [...mergedBaseProducts, ...standaloneCustomProducts];
 }
 
 function normaliseCustomProductName(name = "") {
   return String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function createCustomProductRecord({ name, category = "Custom Products", unit = "m", defaultGrade = "S275", productionMinutes = 0, sectionOptionsText = "", optionRows = [] }, existingProducts = []) {
-  const baseId = normaliseCustomProductName(name) || `custom-product-${Date.now()}`;
+function createCustomProductRecord({ setupMode = "custom", existingProductId = "", name, category = "Custom Products", unit = "m", defaultGrade = "S275", productionMinutes = 0, sectionOptionsText = "", optionRows = [] }, existingProducts = []) {
+  const existingProduct = steelProductDatabase.find((product) => product.id === existingProductId);
+  const isExistingProductExtension = setupMode === "existing" && existingProduct;
+  const baseId = isExistingProductExtension ? existingProduct.id : (normaliseCustomProductName(name) || `custom-product-${Date.now()}`);
   const existingIds = new Set(getProductDatabase(existingProducts).map((product) => product.id));
   let id = baseId;
   let suffix = 2;
-  while (existingIds.has(id)) {
+  while (!isExistingProductExtension && existingIds.has(id)) {
     id = `${baseId}-${suffix}`;
     suffix += 1;
   }
@@ -1276,15 +1307,17 @@ function createCustomProductRecord({ name, category = "Custom Products", unit = 
   const sectionOptions = cleanOptionRows.map((row) => row.size);
   return {
     id,
-    name: String(name || "New product").trim(),
-    category,
-    unit,
-    defaultGrade,
+    extendsProductId: isExistingProductExtension ? existingProduct.id : "",
+    name: isExistingProductExtension ? existingProduct.name : String(name || "New product").trim(),
+    category: isExistingProductExtension ? existingProduct.category : category,
+    unit: unit || existingProduct?.unit || "m",
+    defaultGrade: defaultGrade || existingProduct?.defaultGrade || "S275",
     productionMinutes: Number(productionMinutes || 0),
-    inputs: ["sectionSize", "length", "quantity", "finish"],
+    inputs: existingProduct?.inputs || ["sectionSize", "length", "quantity", "finish"],
     sectionOptions,
     optionRows: cleanOptionRows,
-    isCustom: true,
+    isCustom: !isExistingProductExtension,
+    isProductSetupExtension: isExistingProductExtension,
   };
 }
 
@@ -1343,8 +1376,8 @@ function calculatePlateWeightKg({ thicknessMm, widthMm, lengthValue, lengthUnit 
 }
 
 function getSectionOptions(productId, customProducts = []) {
-  const customProduct = (customProducts || []).find((product) => product.id === productId);
-  if (customProduct?.sectionOptions?.length) return customProduct.sectionOptions;
+  const mergedProduct = getProductDatabase(customProducts).find((product) => product.id === productId);
+  if (mergedProduct?.sectionOptions?.length) return mergedProduct.sectionOptions;
   return steelSectionInventory[productId] || [];
 }
 
@@ -3887,9 +3920,51 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
   );
 }
 
-function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts }) {
+function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts, onAddCustomProduct }) {
   const productDatabase = getProductDatabase(customProducts);
   const [addStockOpen, setAddStockOpen] = useState(false);
+  const [productSetupOpen, setProductSetupOpen] = useState(false);
+  const emptyStockProductOption = { id: createEntityId("stock-product-option"), size: "", price: "", productionMinutes: "" };
+  const [stockProductDraft, setStockProductDraft] = useState({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [emptyStockProductOption] });
+  const [stockSetupStatus, setStockSetupStatus] = useState("");
+
+  function updateStockProductOption(optionId, patch) {
+    setStockProductDraft((current) => ({ ...current, optionRows: (current.optionRows || []).map((row) => row.id === optionId ? { ...row, ...patch } : row) }));
+  }
+
+  function addStockProductOption() {
+    setStockProductDraft((current) => ({ ...current, optionRows: [...(current.optionRows || []), { id: createEntityId("stock-product-option"), size: "", price: "", productionMinutes: "" }] }));
+  }
+
+  function removeStockProductOption(optionId) {
+    setStockProductDraft((current) => {
+      const rows = (current.optionRows || []).filter((row) => row.id !== optionId);
+      return { ...current, optionRows: rows.length ? rows : [{ id: createEntityId("stock-product-option"), size: "", price: "", productionMinutes: "" }] };
+    });
+  }
+
+  function addProductSetupFromStock() {
+    const setupMode = stockProductDraft.setupMode || "existing";
+    const existingProduct = steelProductDatabase.find((product) => product.id === stockProductDraft.existingProductId);
+    const optionRows = (stockProductDraft.optionRows || []).filter((row) => String(row.size || "").trim());
+    if (setupMode === "custom" && !stockProductDraft.name.trim()) { setStockSetupStatus("Enter a custom product name."); return; }
+    if (setupMode === "existing" && !existingProduct) { setStockSetupStatus("Choose an existing product line."); return; }
+    if (!optionRows.length) { setStockSetupStatus("Add at least one section / size line."); return; }
+    const missingTime = optionRows.some((row) => Number(row.productionMinutes || 0) <= 0);
+    if (Number(stockProductDraft.productionMinutes || 0) <= 0 && missingTime) { setStockSetupStatus("Add default time or time for every size line."); return; }
+    const product = createCustomProductRecord({
+      ...stockProductDraft,
+      name: setupMode === "existing" ? existingProduct.name : stockProductDraft.name,
+      category: setupMode === "existing" ? existingProduct.category : stockProductDraft.category,
+      unit: stockProductDraft.unit || existingProduct?.unit || "m",
+      defaultGrade: stockProductDraft.defaultGrade || existingProduct?.defaultGrade || "S275",
+      optionRows: optionRows.map((row) => ({ ...row, productionMinutes: Number(row.productionMinutes || stockProductDraft.productionMinutes || 0) })),
+    }, customProducts);
+    onAddCustomProduct?.(product);
+    setNewStockItem((current) => ({ ...current, productId: product.id, sectionSize: product.sectionOptions?.[0] || current.sectionSize, grade: product.defaultGrade || current.grade }));
+    setStockProductDraft({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [{ id: createEntityId("stock-product-option"), size: "", price: "", productionMinutes: "" }] });
+    setStockSetupStatus(`${product.name} product setup updated for Quotes and Stock Inventory.`);
+  }
   const totalStockLines = stockItems.length;
   const lowStockLines = stockItems.filter((item) => item.status === "Low Stock" || Number(item.quantity || 0) <= 0).length;
   const onOrderLines = stockItems.filter((item) => item.status === "On Order").length;
@@ -3907,6 +3982,45 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
         <div className="rounded-3xl bg-white p-5 shadow-sm"><p className="text-sm text-blue-600">On Order</p><p className="mt-1 text-3xl font-bold">{onOrderLines}</p></div>
         <div className="rounded-3xl bg-white p-5 shadow-sm"><p className="text-sm text-blue-600">Allocated length</p><p className="mt-1 text-3xl font-bold">{formatLengthM(totalAllocatedLengthM)}</p></div>
         <div className="rounded-3xl bg-white p-5 shadow-sm"><p className="text-sm text-blue-600">Available length</p><p className="mt-1 text-3xl font-bold">{formatLengthM(totalAvailableLengthM)}</p></div>
+      </div>
+
+      <div className="rounded-3xl bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-bold">Product setup</h3>
+            <p className="mt-1 text-sm text-blue-800">Add missing section sizes to an existing product line or create a custom product before adding stock.</p>
+          </div>
+          <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setProductSetupOpen(!productSetupOpen)}>{productSetupOpen ? "Hide product setup" : "Open product setup"}</button>
+        </div>
+        {productSetupOpen ? <div className="mt-4 rounded-2xl bg-blue-50 p-4">
+          <div className="grid gap-3 md:grid-cols-6">
+            <Field label="Product setup type"><SelectInput value={stockProductDraft.setupMode || "existing"} onChange={(event) => { const mode = event.target.value; const existing = steelProductDatabase.find((product) => product.id === stockProductDraft.existingProductId) || steelProductDatabase[0]; setStockProductDraft({ ...stockProductDraft, setupMode: mode, unit: mode === "existing" ? existing.unit : stockProductDraft.unit, defaultGrade: mode === "existing" ? existing.defaultGrade : stockProductDraft.defaultGrade }); }}><option value="existing">Existing product line</option><option value="custom">Custom product</option></SelectInput></Field>
+            {stockProductDraft.setupMode !== "custom" ? <Field label="Existing product line"><SelectInput value={stockProductDraft.existingProductId || "ub"} onChange={(event) => { const existing = steelProductDatabase.find((product) => product.id === event.target.value); setStockProductDraft({ ...stockProductDraft, existingProductId: event.target.value, unit: existing?.unit || "m", defaultGrade: existing?.defaultGrade || "S275" }); }}>{steelProductDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field> : <Field label="Product name"><TextInput value={stockProductDraft.name} onChange={(event) => setStockProductDraft({ ...stockProductDraft, name: event.target.value })} placeholder="e.g. Special bracket" /></Field>}
+            {stockProductDraft.setupMode === "custom" ? <Field label="Category"><TextInput value={stockProductDraft.category} onChange={(event) => setStockProductDraft({ ...stockProductDraft, category: event.target.value })} /></Field> : null}
+            <Field label="Unit"><SelectInput value={stockProductDraft.unit} onChange={(event) => setStockProductDraft({ ...stockProductDraft, unit: event.target.value })}><option value="m">m</option><option value="each">each</option><option value="kg">kg</option><option value="tonne">tonne</option><option value="sheet">sheet</option></SelectInput></Field>
+            <Field label="Grade"><SelectInput value={stockProductDraft.defaultGrade} onChange={(event) => setStockProductDraft({ ...stockProductDraft, defaultGrade: event.target.value })}>{steelGradeOptions.map((grade) => <option key={grade}>{grade}</option>)}</SelectInput></Field>
+            <Field label="Default time mins"><TextInput type="number" value={stockProductDraft.productionMinutes} onChange={(event) => setStockProductDraft({ ...stockProductDraft, productionMinutes: event.target.value })} placeholder="Required or per size" /></Field>
+          </div>
+          <div className="mt-4 rounded-2xl bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div><p className="text-sm font-bold text-blue-950">Section / size lines</p><p className="text-xs text-blue-700">Example: add 254x146x37 under Universal Beam / RSJ.</p></div>
+              <button className="rounded-lg border bg-white px-3 py-2 text-xs font-bold" onClick={addStockProductOption}>Add size line</button>
+            </div>
+            <div className="space-y-2">
+              {(stockProductDraft.optionRows || []).map((option, index) => <div key={option.id} className="grid gap-2 md:grid-cols-[80px_1fr_150px_150px_auto] md:items-end">
+                <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700">Line {index + 1}</div>
+                <Field label="Section / size"><TextInput value={option.size} onChange={(event) => updateStockProductOption(option.id, { size: event.target.value })} placeholder="e.g. 254x146x37" /></Field>
+                <Field label="Price £"><TextInput type="number" step="0.01" value={option.price} onChange={(event) => updateStockProductOption(option.id, { price: event.target.value })} placeholder="Optional" /></Field>
+                <Field label="Time mins"><TextInput type="number" value={option.productionMinutes || ""} onChange={(event) => updateStockProductOption(option.id, { productionMinutes: event.target.value })} placeholder="Optional" /></Field>
+                <button disabled={(stockProductDraft.optionRows || []).length === 1} className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-40" onClick={() => removeStockProductOption(option.id)}>Remove</button>
+              </div>)}
+            </div>
+          </div>
+          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            {stockSetupStatus ? <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">{stockSetupStatus}</p> : <p className="text-xs font-semibold text-blue-700">Product setup updates both Quote product lines and Stock Inventory add-stock options.</p>}
+            <button className="rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white" onClick={addProductSetupFromStock}>{stockProductDraft.setupMode === "custom" ? "Create product" : "Add section size"}</button>
+          </div>
+        </div> : null}
       </div>
 
       <div className="rounded-3xl bg-white p-5 shadow-sm">
@@ -4606,7 +4720,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
   const [importPanelOpen, setImportPanelOpen] = useState(false);
   const [pricingPanelOpen, setPricingPanelOpen] = useState(false);
   const emptyProductOptionRow = { id: createEntityId("product-option"), size: "", price: "" };
-  const [newProductDraft, setNewProductDraft] = useState({ name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [emptyProductOptionRow] });
+  const [newProductDraft, setNewProductDraft] = useState({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [emptyProductOptionRow] });
 
   const quoteItems = lines.map((line) => buildSteelQuoteItem(line, pricingSchedule, productDatabase));
   const totals = calculateTotal(quoteItems, 20, "unitPrice");
@@ -4804,8 +4918,14 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
   }
 
   function addCustomProductFromQuoteBuilder() {
-    if (!newProductDraft.name.trim()) {
+    const setupMode = newProductDraft.setupMode || "custom";
+    const existingProduct = steelProductDatabase.find((product) => product.id === newProductDraft.existingProductId);
+    if (setupMode === "custom" && !newProductDraft.name.trim()) {
       setStatus("Enter a product name before adding it.");
+      return;
+    }
+    if (setupMode === "existing" && !existingProduct) {
+      setStatus("Choose an existing product line before adding a section size.");
       return;
     }
     const optionRows = (newProductDraft.optionRows || []).filter((row) => String(row.size || "").trim());
@@ -4814,12 +4934,19 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       setStatus("Add production time in minutes for every custom product size, or enter a default time before creating the product.");
       return;
     }
-    const product = createCustomProductRecord({ ...newProductDraft, optionRows: optionRows.map((row) => ({ ...row, productionMinutes: Number(row.productionMinutes || newProductDraft.productionMinutes || 0) })) }, customProducts);
+    const product = createCustomProductRecord({
+      ...newProductDraft,
+      name: setupMode === "existing" ? existingProduct.name : newProductDraft.name,
+      category: setupMode === "existing" ? existingProduct.category : newProductDraft.category,
+      unit: newProductDraft.unit || existingProduct?.unit || "m",
+      defaultGrade: newProductDraft.defaultGrade || existingProduct?.defaultGrade || "S275",
+      optionRows: optionRows.map((row) => ({ ...row, productionMinutes: Number(row.productionMinutes || newProductDraft.productionMinutes || 0) })),
+    }, customProducts);
     onAddCustomProduct(product);
     setLineForm((current) => ({ ...current, productId: product.id, sectionSize: product.sectionOptions[0] || "", grade: product.defaultGrade }));
-    setNewProductDraft({ name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [{ id: createEntityId("product-option"), size: "", price: "" }] });
+    setNewProductDraft({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [{ id: createEntityId("product-option"), size: "", price: "" }] });
     setProductSetupOpen(false);
-    setStatus(`${product.name} added to Manual product line, Pricing and Stock Inventory.`);
+    setStatus(`${product.name} product setup updated. New section sizes are available in Quotes, Purchasing and Stock Inventory.`);
   }
 
   const webHoleCount = normaliseTakeoffOptionCount(lineForm.webHolesRequired, lineForm.webHoles, lineForm.length, lineForm.webHoleCentres);
@@ -4885,12 +5012,13 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         {productSetupOpen ? (
           <div className="mt-5 rounded-2xl bg-blue-50 p-4">
             <div className="grid gap-3 md:grid-cols-6">
-              <Field label="Product name"><TextInput value={newProductDraft.name} onChange={(event) => setNewProductDraft({ ...newProductDraft, name: event.target.value })} placeholder="e.g. Handrail tube" /></Field>
-              <Field label="Category"><TextInput value={newProductDraft.category} onChange={(event) => setNewProductDraft({ ...newProductDraft, category: event.target.value })} placeholder="e.g. Balustrade" /></Field>
-              <Field label="Unit"><SelectInput value={newProductDraft.unit} onChange={(event) => setNewProductDraft({ ...newProductDraft, unit: event.target.value })}><option value="m">m</option><option value="each">each</option><option value="kg">kg</option></SelectInput></Field>
+              <Field label="Product setup type"><SelectInput value={newProductDraft.setupMode || "existing"} onChange={(event) => { const mode = event.target.value; const existing = steelProductDatabase.find((product) => product.id === newProductDraft.existingProductId) || steelProductDatabase[0]; setNewProductDraft({ ...newProductDraft, setupMode: mode, unit: mode === "existing" ? existing.unit : newProductDraft.unit, defaultGrade: mode === "existing" ? existing.defaultGrade : newProductDraft.defaultGrade }); }}><option value="existing">Existing product line</option><option value="custom">Custom product</option></SelectInput></Field>
+              {newProductDraft.setupMode !== "custom" ? <Field label="Existing product line"><SelectInput value={newProductDraft.existingProductId || "ub"} onChange={(event) => { const existing = steelProductDatabase.find((product) => product.id === event.target.value); setNewProductDraft({ ...newProductDraft, existingProductId: event.target.value, unit: existing?.unit || "m", defaultGrade: existing?.defaultGrade || "S275" }); }}>{steelProductDatabase.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</SelectInput></Field> : <Field label="Product name"><TextInput value={newProductDraft.name} onChange={(event) => setNewProductDraft({ ...newProductDraft, name: event.target.value })} placeholder="e.g. Handrail tube" /></Field>}
+              {newProductDraft.setupMode === "custom" ? <Field label="Category"><TextInput value={newProductDraft.category} onChange={(event) => setNewProductDraft({ ...newProductDraft, category: event.target.value })} placeholder="e.g. Balustrade" /></Field> : null}
+              <Field label="Unit"><SelectInput value={newProductDraft.unit} onChange={(event) => setNewProductDraft({ ...newProductDraft, unit: event.target.value })}><option value="m">m</option><option value="each">each</option><option value="kg">kg</option><option value="tonne">tonne</option><option value="sheet">sheet</option></SelectInput></Field>
               <Field label="Default grade"><SelectInput value={newProductDraft.defaultGrade} onChange={(event) => setNewProductDraft({ ...newProductDraft, defaultGrade: event.target.value })}>{steelGradeOptions.map((grade) => <option key={grade}>{grade}</option>)}</SelectInput></Field>
               <Field label="Default time mins"><TextInput required type="number" value={newProductDraft.productionMinutes} onChange={(event) => setNewProductDraft({ ...newProductDraft, productionMinutes: event.target.value })} placeholder="Required or per size" /></Field>
-              <div className="flex items-end"><button className="w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white" onClick={addCustomProductFromQuoteBuilder}>Create product</button></div>
+              <div className="flex items-end"><button className="w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white" onClick={addCustomProductFromQuoteBuilder}>{newProductDraft.setupMode === "custom" ? "Create product" : "Add section size"}</button></div>
             </div>
             <div className="mt-4 rounded-2xl bg-white p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -7651,6 +7779,7 @@ export default function FabricationProductionPlannerIntegrated() {
             onCutAllocatedStockItem={cutAllocatedStockItem}
             onManualCutOffcutStockItem={manualCutOffcutStockItem}
             customProducts={customProducts}
+            onAddCustomProduct={addCustomProduct}
           />
         ) : null}
 
