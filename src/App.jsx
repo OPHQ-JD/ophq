@@ -1245,10 +1245,15 @@ function calculateTotal(items, vatRate = 20, priceKey = "unitPrice") {
 function getProductDatabase(customProducts = []) {
   const customRows = customProducts || [];
   const mergedBaseProducts = steelProductDatabase.map((baseProduct) => {
+    const baseSectionOptions = [
+      ...(baseProduct.sectionOptions || []),
+      ...(steelSectionInventory[baseProduct.id] || []),
+    ].filter(Boolean);
+    const baseWithSections = { ...baseProduct, sectionOptions: Array.from(new Set(baseSectionOptions)) };
     const extensions = customRows.filter((product) => product.id === baseProduct.id || product.extendsProductId === baseProduct.id);
-    if (!extensions.length) return baseProduct;
-    const optionRows = [...(baseProduct.optionRows || [])];
-    const sectionOptions = [...(baseProduct.sectionOptions || [])];
+    if (!extensions.length) return baseWithSections;
+    const optionRows = [...(baseWithSections.optionRows || [])];
+    const sectionOptions = [...(baseWithSections.sectionOptions || [])];
     extensions.forEach((extension) => {
       (extension.optionRows || []).forEach((row) => {
         const size = String(row.size || row.sectionSize || "").trim();
