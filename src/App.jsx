@@ -1358,9 +1358,10 @@ function getProductName(productId, productDatabase = steelProductDatabase) {
 
 function getPricingRow(schedule, productId, sectionSize = "") {
   const rows = schedule || [];
-  return rows.find((row) => row.productId === productId && row.sectionSize === sectionSize)
-    || rows.find((row) => row.productId === productId && !row.sectionSize)
-    || { buyPrice: 0, markupAmount: 0 };
+  const defaultRow = rows.find((row) => row.productId === productId && !row.sectionSize);
+  const exactRow = rows.find((row) => row.productId === productId && row.sectionSize === sectionSize);
+  if (exactRow?.inheritsProductPricing && defaultRow) return defaultRow;
+  return exactRow || defaultRow || { buyPrice: 0, markupAmount: 0 };
 }
 
 function calculateSellPriceFromRow(row) {
@@ -5207,7 +5208,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         {pricingPanelOpen ? <div className="mt-4 overflow-auto rounded-2xl border border-blue-100">
           <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead><tr className="border-b border-blue-100 bg-blue-50 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pl-3 pr-3">Product / Process</th><th className="py-3 pr-3 text-right">Buy price</th><th className="py-3 pr-3 text-right">Markup £</th><th className="py-3 pr-3 text-right">Sell</th><th className="py-3 pr-3 text-right">Actions</th></tr></thead>
-            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td><td className="py-2 pr-3 text-right">{canRemovePricingProductRow(row) ? <button className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => removePricingProductRow(row)}>Remove product</button> : <span className="text-xs font-semibold text-blue-400">Locked</span>}</td></tr>)}</tbody>
+            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.inheritsProductPricing ? <p className="text-xs font-semibold text-emerald-700">Inherits parent product pricing</p> : row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td><td className="py-2 pr-3 text-right">{canRemovePricingProductRow(row) ? <button className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => removePricingProductRow(row)}>Remove product</button> : <span className="text-xs font-semibold text-blue-400">Locked</span>}</td></tr>)}</tbody>
           </table>
         </div> : null}
       </div>
@@ -7536,13 +7537,28 @@ export default function FabricationProductionPlannerIntegrated() {
     if (!created) return;
     setPricingSchedule((current) => {
       const existingKeys = new Set(current.map((row) => `${row.productId}::${row.sectionSize || ""}`));
-      const optionRows = (product.optionRows?.length ? product.optionRows : [{ size: "", price: 1000 }]).map((option) => ({
-        productId: product.id,
-        sectionSize: option.size || "",
-        buyPrice: Number(option.price || 0),
-        markupAmount: 0,
-        priceMode: product.unit === "each" ? "fixed" : "per_tonne",
-      })).filter((row) => !existingKeys.has(`${row.productId}::${row.sectionSize || ""}`));
+      const extendsExistingProduct = Boolean(product.extendsProductId) && product.extendsProductId === product.id;
+      const inheritedPricingRow = extendsExistingProduct ? getPricingRow(current, product.id, "") : null;
+      const optionRows = (product.optionRows?.length ? product.optionRows : [{ size: "", price: 1000 }]).map((option) => {
+        const sectionSize = option.size || "";
+        if (extendsExistingProduct) {
+          return {
+            productId: product.id,
+            sectionSize,
+            buyPrice: Number(inheritedPricingRow?.buyPrice || 0),
+            markupAmount: Number(inheritedPricingRow?.markupAmount || 0),
+            priceMode: inheritedPricingRow?.priceMode || (product.unit === "each" ? "fixed" : "per_tonne"),
+            inheritsProductPricing: true,
+          };
+        }
+        return {
+          productId: product.id,
+          sectionSize,
+          buyPrice: Number(option.price || 0),
+          markupAmount: 0,
+          priceMode: product.unit === "each" ? "fixed" : "per_tonne",
+        };
+      }).filter((row) => !existingKeys.has(`${row.productId}::${row.sectionSize || ""}`));
       return [...current, ...optionRows];
     });
     setNewStockItem((current) => ({ ...current, productId: product.id, sectionSize: product.sectionOptions?.[0] || "", grade: product.defaultGrade || current.grade }));
