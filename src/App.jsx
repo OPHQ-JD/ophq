@@ -4662,7 +4662,7 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
   );
 }
 
-function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
+function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onRemoveCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const canEditPricing = activeRole === "operations";
   const [quoteMeta, setQuoteMeta] = useState({ customerId: customers[0]?.id || "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "" });
@@ -4883,6 +4883,49 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
     setQuotes((current) => [withRecordMeta(duplicated), ...current]);
     setSelectedQuotePreviewId(duplicated.id);
     setStatus(`${duplicated.quoteNo} created as a draft copy of ${quote.quoteNo}.`);
+  }
+
+  function removeCompletedQuote(quote) {
+    const linkedJobs = jobs.filter((job) => job.quoteId === quote.id);
+    const linkedMessage = linkedJobs.length ? `\n\nWarning: ${linkedJobs.length} job(s) are linked to this quote. Historic job records may no longer show the quote link if you remove it.` : "";
+    const convertedMessage = ["Accepted", "Converted", "In Planner Review", "Ready to send", "Sent"].includes(quote.status) ? "\n\nThis quote is not a draft. Only remove it if this is a duplicate or was created in error." : "";
+    if (!window.confirm(`Remove ${quote.quoteNo || "this quote"}?${convertedMessage}${linkedMessage}\n\nThis cannot be undone unless you restore a backup.`)) return;
+    setQuotes((current) => current.filter((item) => item.id !== quote.id));
+    if (selectedQuotePreviewId === quote.id) setSelectedQuotePreviewId(null);
+    if (editingQuoteId === quote.id) {
+      setEditingQuoteId(null);
+      setLines([]);
+    }
+    setStatus(`${quote.quoteNo || "Quote"} removed.`);
+  }
+
+  function customProductRowMatches(row, product) {
+    const size = String(row.sectionSize || "").trim().toLowerCase();
+    if (product.id !== row.productId && product.extendsProductId !== row.productId) return false;
+    if (!size) return product.id === row.productId && !product.extendsProductId;
+    return (product.optionRows || []).some((option) => String(option.size || option.sectionSize || "").trim().toLowerCase() === size)
+      || (product.sectionOptions || []).some((option) => String(option || "").trim().toLowerCase() === size);
+  }
+
+  function canRemovePricingProductRow(row) {
+    if (!canEditPricing) return false;
+    if (String(row.productId || "").startsWith("finish-")) return false;
+    return (customProducts || []).some((product) => customProductRowMatches(row, product));
+  }
+
+  function removePricingProductRow(row) {
+    if (!canRemovePricingProductRow(row)) {
+      setStatus("Only Operations-created custom products or added section sizes can be removed from Product Setup.");
+      return;
+    }
+    const sectionSize = String(row.sectionSize || "").trim();
+    const productName = getProductName(row.productId, productDatabase);
+    const quoteUses = quotes.some((quote) => (quote.takeoffLines || []).some((line) => String(line.productId || "") === String(row.productId || "") && (!sectionSize || String(line.sectionSize || "").trim().toLowerCase() === sectionSize.toLowerCase())));
+    const useWarning = quoteUses ? "\n\nExisting quotes use this product/size. They will keep their saved line text, but this product/size will be hidden from new quote lines." : "";
+    if (!window.confirm(`Remove ${productName}${sectionSize ? ` · ${sectionSize}` : ""} from new quotes and stock setup?${useWarning}`)) return;
+    if (typeof onRemoveCustomProduct === "function") onRemoveCustomProduct({ productId: row.productId, sectionSize });
+    setPricingSchedule((current) => current.filter((item) => !(item.productId === row.productId && String(item.sectionSize || "") === String(row.sectionSize || ""))));
+    setStatus(`${productName}${sectionSize ? ` · ${sectionSize}` : ""} removed from Product Setup for new records.`);
   }
 
   function updateQuoteStatusLocal(quoteId, nextStatus) {
@@ -5142,7 +5185,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
           {quotes.map((quote) => (
             <div key={quote.id} className="rounded-2xl border border-blue-100 bg-white p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><p className="font-bold">{quote.quoteNo} · {quote.title}</p><p className="text-sm text-blue-800">{quote.customer} · {quote.date} · Valid until {quote.validUntil}</p>{quote.uploadedFileName ? <p className="mt-1 text-xs font-semibold text-blue-600">File: {quote.uploadedFileName}</p> : null}<p className="mt-2 text-xl font-bold">{currency(quote.total)}</p><p className="mt-1 text-xs font-semibold text-blue-700">Est. production: {Number(quote.estimatedProductionHours || 0).toFixed(2)} hrs · Ready: {quote.leadTime?.earliestReadyDate || "Planner review pending"}</p></div><span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${getStatusStyle(quote.status)}`}>{quote.status}</span></div>
-              <div className="mt-4 flex flex-wrap gap-2"><SelectInput value={quote.status} onChange={(event) => updateQuoteStatusLocal(quote.id, event.target.value)}>{quoteStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setSelectedQuotePreviewId(selectedQuotePreviewId === quote.id ? null : quote.id)}>Preview quote</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => editCompletedQuote(quote)}>Edit quote</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => duplicateCompletedQuote(quote)}>Duplicate/revise</button><button disabled={["In Planner Review", "Ready to send", "Sent", "Accepted", "Converted"].includes(quote.status)} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => onSendToPlannerInbox(quote)}>Send for approval</button>{quote.status === "Draft" ? <span className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">Lead time will be approved before customer send</span> : null}</div>
+              <div className="mt-4 flex flex-wrap gap-2"><SelectInput value={quote.status} onChange={(event) => updateQuoteStatusLocal(quote.id, event.target.value)}>{quoteStatuses.map((status) => <option key={status}>{status}</option>)}</SelectInput><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setSelectedQuotePreviewId(selectedQuotePreviewId === quote.id ? null : quote.id)}>Preview quote</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => editCompletedQuote(quote)}>Edit quote</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => duplicateCompletedQuote(quote)}>Duplicate/revise</button><button className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-700" onClick={() => removeCompletedQuote(quote)}>Remove quote</button><button disabled={["In Planner Review", "Ready to send", "Sent", "Accepted", "Converted"].includes(quote.status)} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-40" onClick={() => onSendToPlannerInbox(quote)}>Send for approval</button>{quote.status === "Draft" ? <span className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800">Lead time will be approved before customer send</span> : null}</div>
               {selectedQuotePreviewId === quote.id ? <div className="mt-4 space-y-3"><div className="flex justify-end"><button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={() => printQuotePdf({ quote, customer: customers.find((customer) => customer.id === quote.customerId), companySettings, onRegisterDocument })}>Print / Save quote PDF</button></div><QuotePreview quote={quote} customer={customers.find((customer) => customer.id === quote.customerId)} companySettings={companySettings} /></div> : null}
             </div>
           ))}
@@ -5163,8 +5206,8 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         </div>
         {pricingPanelOpen ? <div className="mt-4 overflow-auto rounded-2xl border border-blue-100">
           <table className="w-full min-w-[720px] border-collapse text-sm">
-            <thead><tr className="border-b border-blue-100 bg-blue-50 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pl-3 pr-3">Product / Process</th><th className="py-3 pr-3 text-right">Buy price</th><th className="py-3 pr-3 text-right">Markup £</th><th className="py-3 pr-3 text-right">Sell</th></tr></thead>
-            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td></tr>)}</tbody>
+            <thead><tr className="border-b border-blue-100 bg-blue-50 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pl-3 pr-3">Product / Process</th><th className="py-3 pr-3 text-right">Buy price</th><th className="py-3 pr-3 text-right">Markup £</th><th className="py-3 pr-3 text-right">Sell</th><th className="py-3 pr-3 text-right">Actions</th></tr></thead>
+            <tbody>{pricingSchedule.map((row) => <tr key={`${row.productId}-${row.sectionSize || "default"}`} className="border-b border-blue-100"><td className="py-2 pl-3 pr-3 font-semibold"><p>{getProductName(row.productId, productDatabase)}</p>{row.sectionSize ? <p className="text-xs font-semibold text-blue-600">Section / size: {row.sectionSize}</p> : null}{row.priceMode === "fixed" ? <p className="text-xs font-semibold text-emerald-700">Fixed price per item</p> : <p className="text-xs font-semibold text-blue-600">{row.productId?.startsWith("finish-") ? "Finish £/tonne" : "Steel/material £/tonne"}</p>}</td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.buyPrice} onChange={(event) => updatePricingRow(row.productId, { buyPrice: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3"><TextInput disabled={!canEditPricing} type="number" value={row.markupAmount} onChange={(event) => updatePricingRow(row.productId, { markupAmount: event.target.value }, row.sectionSize || "")} /></td><td className="py-2 pr-3 text-right font-bold">{currency(calculateSellPriceFromRow(row))}</td><td className="py-2 pr-3 text-right">{canRemovePricingProductRow(row) ? <button className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => removePricingProductRow(row)}>Remove product</button> : <span className="text-xs font-semibold text-blue-400">Locked</span>}</td></tr>)}</tbody>
           </table>
         </div> : null}
       </div>
@@ -7509,6 +7552,22 @@ export default function FabricationProductionPlannerIntegrated() {
     }));
   }
 
+
+  function removeCustomProduct({ productId, sectionSize = "" }) {
+    const cleanSize = String(sectionSize || "").trim().toLowerCase();
+    setCustomProducts((current) => (current || []).flatMap((product) => {
+      const matchesProduct = product.id === productId || product.extendsProductId === productId;
+      if (!matchesProduct) return [product];
+      if (!cleanSize) return [];
+      const nextOptionRows = (product.optionRows || []).filter((row) => String(row.size || row.sectionSize || "").trim().toLowerCase() !== cleanSize);
+      const nextSectionOptions = (product.sectionOptions || []).filter((size) => String(size || "").trim().toLowerCase() !== cleanSize);
+      if (!nextOptionRows.length && !nextSectionOptions.length && product.extendsProductId) return [];
+      return [{ ...product, optionRows: nextOptionRows, sectionOptions: nextSectionOptions }];
+    }));
+    setPricingSchedule((current) => current.filter((row) => !(row.productId === productId && String(row.sectionSize || "") === String(sectionSize || ""))));
+    setNewStockItem((current) => current.productId === productId && String(current.sectionSize || "") === String(sectionSize || "") ? { ...current, sectionSize: getSectionOptions(productId, customProducts).find((size) => String(size || "") !== String(sectionSize || "")) || "" } : current);
+  }
+
   function registerGeneratedDocument({ html, documentType, title, relatedResource, relatedResourceId, jobId = "", customerId = "", documentNo = "" }) {
     const user = getProfileForRole(activeRole, profiles);
     const documentRecord = createStoredDocumentRecord({ documentType, title, relatedResource, relatedResourceId, jobId, customerId, documentNo, createdBy: user });
@@ -7836,6 +7895,7 @@ export default function FabricationProductionPlannerIntegrated() {
             activeRole={activeRole}
             customProducts={customProducts}
             onAddCustomProduct={addCustomProduct}
+            onRemoveCustomProduct={removeCustomProduct}
             onSendToPlannerInbox={sendQuoteToPlannerInbox}
             productivityRules={productivityRules}
             jobs={jobs}
