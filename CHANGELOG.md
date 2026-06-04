@@ -1,3 +1,4 @@
+- 2026-06-04: [bug fix + stock/inventory logic] Force top/bottom plate material demand to match flat bar stock by width/thickness regardless of visible product naming. Pricing impact: none. Tests: top/bottom plate flat bar stock allocation before enquiry.
 # Changelog
 
 - 2026-05-27: [UI/layout + file handling] Fixed delivery note print/PDF output to use a clean A4 document print window, matching quote/PO/job sheet behaviour instead of printing the full app screen. Pricing impact: none. Tests: npm run build; manual delivery note print/PDF and quote/PO regression recommended.
