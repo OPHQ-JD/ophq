@@ -1907,6 +1907,7 @@ function createSuggestedPurchaseOrderDraft({ job, missingParts, supplierId, poCo
     poNo: "",
     documentKind: "Enquiry",
     jobId: job.id,
+    jobNo: job.jobNo || "",
     supplierId,
     date: today,
     requiredBy: job.materialsDue || toIso(addDays(new Date(today), 3)),
@@ -1921,8 +1922,18 @@ function isEnquiryDocument(po = {}) {
   return po.documentKind === "Enquiry" || String(po.status || "").startsWith("Enquiry") || po.status === "Supplier Quote Received";
 }
 
+function formatPurchasingJobSuffix(jobNo = "") {
+  const clean = String(jobNo || "").trim();
+  if (!clean) return "";
+  return clean.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
 function getPurchasingDocumentNumber(po = {}) {
-  return isEnquiryDocument(po) ? (po.enquiryNo || po.poNo || "Enquiry") : (po.poNo || po.enquiryNo || "Purchase Order");
+  if (isEnquiryDocument(po)) return po.enquiryNo || po.poNo || "Enquiry";
+  const base = po.poNo || po.enquiryNo || "Purchase Order";
+  const suffix = formatPurchasingJobSuffix(po.jobNo || po.linkedJobNo || "");
+  if (!suffix || String(base).toUpperCase().includes(suffix)) return base;
+  return `${base}-${suffix}`;
 }
 
 function getPurchasingDocumentTitle(po = {}) {
@@ -3845,7 +3856,13 @@ function flatPlateSectionsMatch(stockSection = "", partSection = "") {
   const stockParsed = parseFlatMaterialSectionSize(stockSection);
   const partParsed = parseFlatMaterialSectionSize(partSection);
   if (stockParsed.width && stockParsed.thickness && partParsed.width && partParsed.thickness) {
-    return Number(stockParsed.width) === Number(partParsed.width) && Number(stockParsed.thickness) === Number(partParsed.thickness);
+    const stockWidth = Number(stockParsed.width);
+    const stockThickness = Number(stockParsed.thickness);
+    const partWidth = Number(partParsed.width);
+    const partThickness = Number(partParsed.thickness);
+    const directMatch = stockWidth === partWidth && stockThickness === partThickness;
+    const reversedMatch = stockWidth === partThickness && stockThickness === partWidth;
+    return directMatch || reversedMatch;
   }
   return normaliseSectionKey(stockSection) === normaliseSectionKey(partSection);
 }
@@ -4030,6 +4047,29 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
   const onOrderLines = stockItems.filter((item) => item.status === "On Order").length;
   const totalAvailableLengthM = stockItems.reduce((sum, item) => sum + getRemainingLengthForStockItem(item), 0);
   const totalAllocatedLengthM = stockItems.reduce((sum, item) => sum + getAllocatedLengthForStockItem(item), 0);
+  const isAllocatedInventoryItem = (item = {}) => Boolean(item.allocatedJobId) || ["Allocated", "Allocated Cut"].includes(item.stockLineType) || item.status === "Allocated" || getStockAllocationRows(item, jobs).length > 0;
+  const getInventoryJobGroupLabel = (item = {}) => {
+    const allocation = getStockAllocationRows(item, jobs)[0];
+    const job = jobs.find((jobItem) => jobItem.id === item.allocatedJobId) || jobs.find((jobItem) => jobItem.id === allocation?.jobId);
+    return job?.jobNo || item.allocatedJobNo || allocation?.jobNo || item.allocatedJobId || "Allocated job";
+  };
+  const stockDisplayItems = [...stockItems].sort((a, b) => {
+    const aAllocated = isAllocatedInventoryItem(a);
+    const bAllocated = isAllocatedInventoryItem(b);
+    if (aAllocated !== bAllocated) return aAllocated ? -1 : 1;
+    if (aAllocated && bAllocated) return getInventoryJobGroupLabel(a).localeCompare(getInventoryJobGroupLabel(b));
+    return String(a.productId || "").localeCompare(String(b.productId || "")) || String(a.sectionSize || "").localeCompare(String(b.sectionSize || ""));
+  });
+  const stockDisplayRows = [];
+  let lastInventoryGroup = "";
+  stockDisplayItems.forEach((item) => {
+    const group = isAllocatedInventoryItem(item) ? `Allocated Materials - ${getInventoryJobGroupLabel(item)}` : "Stock Materials / Offcuts";
+    if (group !== lastInventoryGroup) {
+      stockDisplayRows.push({ type: "group", id: `group-${group}`, label: group, allocated: isAllocatedInventoryItem(item) });
+      lastInventoryGroup = group;
+    }
+    stockDisplayRows.push({ type: "item", id: item.id, item });
+  });
 
   return (
     <div className="space-y-6">
@@ -4111,8 +4151,8 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
       <div className="rounded-3xl bg-white p-5 shadow-sm">
         <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
           <div>
-            <h3 className="text-lg font-bold">Inventory list</h3>
-            <p className="text-sm text-blue-800">Full-width stock register. Material identity fields are locked once the line is created.</p>
+            <h3 className="text-lg font-bold">Allocated materials and stock list</h3>
+            <p className="text-sm text-blue-800">Allocated materials are grouped by job at the top. General stock and offcuts are listed below.</p>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -4135,7 +4175,9 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
           </thead>
           <tbody>
             {stockItems.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={12}>No stock items yet. Open Add stock to enter manual stock or receive stock from purchasing.</td></tr> : null}
-            {stockItems.map((item) => {
+            {stockDisplayRows.map((row) => {
+              if (row.type === "group") return <tr key={row.id} className={row.allocated ? "bg-blue-100" : "bg-emerald-50"}><td colSpan={12} className="px-3 py-3 text-sm font-black uppercase tracking-wide text-blue-950">{row.label}</td></tr>;
+              const item = row.item;
               const product = productDatabase.find((product) => product.id === item.productId);
               return (
                 <tr key={item.id} className="border-b border-blue-100 align-top">
@@ -7100,15 +7142,15 @@ export default function FabricationProductionPlannerIntegrated() {
 
     const totals = calculateTotal(items, 20, "unitCost");
     const reservedPoNumber = reserveDocumentNumberSync({ documentType: "purchaseOrder", records: purchaseOrders, linkedSourceNumber: "" });
-    const po = { id: createEntityId("po"), poNo: reservedPoNumber.number, enquiryNo: "", documentKind: "Purchase Order", jobId: newPo.jobId, supplierId: newPo.supplierId, date: today, requiredBy: newPo.requiredBy, status: "Draft PO", items, ...totals };
+    const po = { id: createEntityId("po"), poNo: reservedPoNumber.number, enquiryNo: "", documentKind: "Purchase Order", jobId: newPo.jobId, jobNo: job.jobNo || "", supplierId: newPo.supplierId, date: today, requiredBy: newPo.requiredBy, status: "Draft PO", items, ...totals };
     const created = actionService.createRecord({ resource: "purchase_orders", record: po, setter: setPurchaseOrders, notes: "Purchase order raised against job." });
     if (!created) return;
     const onOrderItems = createStockItemsFromPurchasingDocument(po, "On Order");
     if (onOrderItems.length) {
       setStockItems((current) => [...onOrderItems, ...current]);
-      setAutomationStatus(`${po.poNo} raised and ${onOrderItems.length} stock line(s) added to inventory.`);
+      setAutomationStatus(`${getPurchasingDocumentNumber(po)} raised and ${onOrderItems.length} stock line(s) added to inventory.`);
     } else {
-      setAutomationStatus(`${po.poNo} raised, but no stock lines were added. Check each PO line has product, section and ordered length.`);
+      setAutomationStatus(`${getPurchasingDocumentNumber(po)} raised, but no stock lines were added. Check each PO line has product, section and ordered length.`);
     }
     updateJob(job.id, { status: "Waiting Material", materialsDue: newPo.requiredBy });
     setNewPo({ ...newPo, supplierId: "", supplierName: "", lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: "", finish: "Self colour" }, 1, 1, customProducts)] });
@@ -7226,12 +7268,14 @@ export default function FabricationProductionPlannerIntegrated() {
 
     const reservedPoNumber = reserveDocumentNumberSync({ documentType: "purchaseOrder", records: purchaseOrders, linkedSourceNumber: "" });
     const totals = calculatePoTotals(items, Number(enquiry.vatRate || 20));
+    const linkedJob = jobs.find((job) => job.id === enquiry.jobId);
     const raisedPo = {
       ...enquiry,
       ...totals,
       items,
       documentKind: "Purchase Order",
       poNo: reservedPoNumber.number,
+      jobNo: enquiry.jobNo || linkedJob?.jobNo || "",
       status: "Draft PO",
       raisedFromEnquiryNo: enquiry.enquiryNo || "",
     };
@@ -7256,7 +7300,7 @@ export default function FabricationProductionPlannerIntegrated() {
       return onOrderItems.length ? [...onOrderItems, ...withoutExistingForPo] : withoutExistingForPo;
     });
 
-    setAutomationStatus(`${getPurchasingDocumentNumber(enquiry)} raised to ${raisedPo.poNo}. ${onOrderItems.length ? `${onOrderItems.length} stock line(s) added to inventory.` : "No stock lines added - check ordered length and allocated cut fields."}`);
+    setAutomationStatus(`${getPurchasingDocumentNumber(enquiry)} raised to ${getPurchasingDocumentNumber(raisedPo)}. ${onOrderItems.length ? `${onOrderItems.length} stock line(s) added to inventory.` : "No stock lines added - check ordered length and allocated cut fields."}`);
   }
 
   function startEditPurchaseOrder(po) {
