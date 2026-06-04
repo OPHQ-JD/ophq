@@ -3831,6 +3831,16 @@ function isFlatOrPlateProductId(productId = "") {
   return id === "flat" || id === "plate" || id.includes("flat") || id.includes("plate");
 }
 
+function isFlatOrPlateStockItem(item = {}) {
+  const text = [item.productId, item.productName, item.name, item.category, item.description, item.notes, item.sectionSize].filter(Boolean).join(" ").toLowerCase();
+  return text.includes("flat") || text.includes("plate") || Boolean(parseFlatMaterialSectionSize(item.sectionSize || "").width && parseFlatMaterialSectionSize(item.sectionSize || "").thickness);
+}
+
+function isFlatOrPlateDemand(part = {}) {
+  const demandType = String(part.materialDemandType || "").toLowerCase();
+  return isFlatOrPlateProductId(part.productId) || demandType.includes("plate") || demandType.includes("flat");
+}
+
 function flatPlateSectionsMatch(stockSection = "", partSection = "") {
   const stockParsed = parseFlatMaterialSectionSize(stockSection);
   const partParsed = parseFlatMaterialSectionSize(partSection);
@@ -3843,15 +3853,19 @@ function flatPlateSectionsMatch(stockSection = "", partSection = "") {
 function stockMatchesPart(stockItem, part) {
   const stockProductId = String(stockItem.productId || "").toLowerCase();
   const partProductId = String(part.productId || "").toLowerCase();
-  const flatPlateDemand = isFlatOrPlateProductId(partProductId);
+  const flatPlateDemand = isFlatOrPlateDemand(part);
+  const stockIsFlatPlate = isFlatOrPlateStockItem(stockItem);
   const sameProduct = !partProductId
     || stockProductId === partProductId
-    || (flatPlateDemand && isFlatOrPlateProductId(stockProductId));
+    || (flatPlateDemand && stockIsFlatPlate)
+    || (flatPlateDemand && flatPlateSectionsMatch(stockItem.sectionSize, part.sectionSize));
   const sameSection = !part.sectionSize
     || (flatPlateDemand
       ? flatPlateSectionsMatch(stockItem.sectionSize, part.sectionSize)
       : normaliseSectionKey(stockItem.sectionSize) === normaliseSectionKey(part.sectionSize));
-  const sameGrade = !part.grade || String(stockItem.grade || "").toLowerCase() === String(part.grade || "").toLowerCase();
+  const partGrade = String(part.grade || "").toLowerCase();
+  const stockGrade = String(stockItem.grade || "").toLowerCase();
+  const sameGrade = !partGrade || !stockGrade || stockGrade === partGrade;
   const stockFinish = String(stockItem.finish || "Self colour").toLowerCase();
   const partFinish = String(part.finish || "Self colour").toLowerCase();
   const sameFinish = !part.finish || stockFinish === partFinish || stockFinish === "self colour" || partFinish === "self colour";
