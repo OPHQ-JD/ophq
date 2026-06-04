@@ -824,10 +824,16 @@ function runStockLengthAllocationTests() {
   const remaining = getStockSegments(afterAllocation[0])[0]?.availableLengthM || 0;
   const secondJobStatus = getStockStatusForPart({ ...jobPart, id: "test-part-8m", length: 8, quantity: 1 }, afterAllocation, "job-b");
   const tooLongStatus = getStockStatusForPart({ ...jobPart, id: "test-part-9m", length: 9, quantity: 1 }, afterAllocation, "job-c");
+  const flatPlatePart = { id: "bottom-plate-test", productId: "flat", sectionSize: "300x10", grade: "S355", finish: "Self colour", length: 6, quantity: 1 };
+  const flatBarStock = { id: "flat-stock-test", productId: "flat", sectionSize: "300 x 10", grade: "S355", finish: "Self colour", length: 6, quantity: 1, status: "In Stock", allocatedJobId: "" };
+  const flatPlateStatus = getStockStatusForPart(flatPlatePart, [flatBarStock], "job-flat");
+  const flatPlateAllocatedRows = allocateExistingStockRowsForJob([flatBarStock], { id: "job-flat", jobNo: "JD-FLAT", partsList: [flatPlatePart] });
   const checks = [
     { name: "12.2m stock creates one length segment", passed: getStockSegments(orderedStock).length === 1 },
     { name: "4m allocation leaves 8.2m offcut/remaining", passed: Math.abs(remaining - 8.2) < 0.001 },
     { name: "Second 8m job can use remaining 8.2m", passed: secondJobStatus.label === "On Order" || secondJobStatus.label === "Available" },
+    { name: "Top/bottom plate demand matches manually entered flat bar stock size", passed: flatPlateStatus.label === "Available" },
+    { name: "Top/bottom plate demand allocates matching flat bar stock before enquiry", passed: flatPlateAllocatedRows.some((item) => item.status === "Allocated" && item.allocatedJobId === "job-flat") },
     { name: "9m job is still missing after 4m allocation", passed: tooLongStatus.label === "Missing" || tooLongStatus.missingLengthM > 0 },
   ];
   return { passed: checks.every((check) => check.passed), checks, remainingLengthM: remaining };
@@ -3808,9 +3814,43 @@ function getJobPartsList(job, quote) {
   return sourceItems.flatMap((item, index) => getQuoteLineMaterialDemands(item, job, index));
 }
 
+function normaliseSectionKey(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/×/g, "x")
+    .replace(/mm/g, "")
+    .replace(/flat bar/g, "")
+    .replace(/flat/g, "")
+    .replace(/plate/g, "")
+    .replace(/[^0-9a-z.]+/g, "")
+    .trim();
+}
+
+function isFlatOrPlateProductId(productId = "") {
+  const id = String(productId || "").toLowerCase();
+  return id === "flat" || id === "plate" || id.includes("flat") || id.includes("plate");
+}
+
+function flatPlateSectionsMatch(stockSection = "", partSection = "") {
+  const stockParsed = parseFlatMaterialSectionSize(stockSection);
+  const partParsed = parseFlatMaterialSectionSize(partSection);
+  if (stockParsed.width && stockParsed.thickness && partParsed.width && partParsed.thickness) {
+    return Number(stockParsed.width) === Number(partParsed.width) && Number(stockParsed.thickness) === Number(partParsed.thickness);
+  }
+  return normaliseSectionKey(stockSection) === normaliseSectionKey(partSection);
+}
+
 function stockMatchesPart(stockItem, part) {
-  const sameProduct = !part.productId || stockItem.productId === part.productId;
-  const sameSection = !part.sectionSize || String(stockItem.sectionSize || "").toLowerCase() === String(part.sectionSize || "").toLowerCase();
+  const stockProductId = String(stockItem.productId || "").toLowerCase();
+  const partProductId = String(part.productId || "").toLowerCase();
+  const flatPlateDemand = isFlatOrPlateProductId(partProductId);
+  const sameProduct = !partProductId
+    || stockProductId === partProductId
+    || (flatPlateDemand && isFlatOrPlateProductId(stockProductId));
+  const sameSection = !part.sectionSize
+    || (flatPlateDemand
+      ? flatPlateSectionsMatch(stockItem.sectionSize, part.sectionSize)
+      : normaliseSectionKey(stockItem.sectionSize) === normaliseSectionKey(part.sectionSize));
   const sameGrade = !part.grade || String(stockItem.grade || "").toLowerCase() === String(part.grade || "").toLowerCase();
   const stockFinish = String(stockItem.finish || "Self colour").toLowerCase();
   const partFinish = String(part.finish || "Self colour").toLowerCase();
