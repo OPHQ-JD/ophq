@@ -760,12 +760,16 @@ function allocateExistingStockRowsForJob(stockItems = [], job = {}) {
     const quantity = Math.max(1, Number(part.quantity || 1));
     for (let index = 0; index < quantity; index += 1) {
       const cutLengthM = getPartCutLengthM(part);
-      const candidateIndex = rows.findIndex((item) => {
-        if (!stockMatchesPart(item, part)) return false;
-        if (item.allocatedJobId) return false;
-        if (!["In Stock", "Offcut", "Available"].includes(item.status)) return false;
-        return Number(item.length || getRemainingLengthForStockItem(item) || 0) + 0.0001 >= cutLengthM;
-      });
+      const candidateOptions = rows
+        .map((item, rowIndex) => ({ item, rowIndex, availableLengthM: Number(item.length || getRemainingLengthForStockItem(item) || 0) }))
+        .filter(({ item, availableLengthM }) => {
+          if (!stockMatchesPart(item, part)) return false;
+          if (item.allocatedJobId) return false;
+          if (!["In Stock", "Offcut", "Available"].includes(item.status)) return false;
+          return availableLengthM + 0.0001 >= cutLengthM;
+        })
+        .sort((a, b) => a.availableLengthM - b.availableLengthM);
+      const candidateIndex = candidateOptions[0]?.rowIndex ?? -1;
       if (candidateIndex < 0) continue;
       const source = rows[candidateIndex];
       const sourceLengthM = Number(source.length || getRemainingLengthForStockItem(source) || 0);
@@ -828,12 +832,17 @@ function runStockLengthAllocationTests() {
   const flatBarStock = { id: "flat-stock-test", productId: "flat", sectionSize: "300 x 10", grade: "S355", finish: "Self colour", length: 6, quantity: 1, status: "In Stock", allocatedJobId: "" };
   const flatPlateStatus = getStockStatusForPart(flatPlatePart, [flatBarStock], "job-flat");
   const flatPlateAllocatedRows = allocateExistingStockRowsForJob([flatBarStock], { id: "job-flat", jobNo: "JD-FLAT", partsList: [flatPlatePart] });
+  const bestFitStockRows = allocateExistingStockRowsForJob([
+    { id: "stock-12-2", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 12.2, quantity: 1, status: "In Stock", allocatedJobId: "" },
+    { id: "stock-11", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 11, quantity: 1, status: "In Stock", allocatedJobId: "" },
+  ], { id: "job-best-fit", jobNo: "JD-BEST", partsList: [{ ...jobPart, length: 10.5 }] });
   const checks = [
     { name: "12.2m stock creates one length segment", passed: getStockSegments(orderedStock).length === 1 },
     { name: "4m allocation leaves 8.2m offcut/remaining", passed: Math.abs(remaining - 8.2) < 0.001 },
     { name: "Second 8m job can use remaining 8.2m", passed: secondJobStatus.label === "On Order" || secondJobStatus.label === "Available" },
     { name: "Top/bottom plate demand matches manually entered flat bar stock size", passed: flatPlateStatus.label === "Available" },
     { name: "Top/bottom plate demand allocates matching flat bar stock before enquiry", passed: flatPlateAllocatedRows.some((item) => item.status === "Allocated" && item.allocatedJobId === "job-flat") },
+    { name: "Existing stock allocation chooses shortest suitable length", passed: bestFitStockRows.some((item) => item.status === "Allocated" && item.sourceStockItemId === "stock-11") },
     { name: "9m job is still missing after 4m allocation", passed: tooLongStatus.label === "Missing" || tooLongStatus.missingLengthM > 0 },
   ];
   return { passed: checks.every((check) => check.passed), checks, remainingLengthM: remaining };
