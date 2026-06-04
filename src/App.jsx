@@ -4666,7 +4666,7 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
 function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onRemoveCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const canEditPricing = activeRole === "operations";
-  const [quoteMeta, setQuoteMeta] = useState({ customerId: customers[0]?.id || "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "" });
+  const [quoteMeta, setQuoteMeta] = useState({ customerId: "", customerName: "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "" });
   const [lineForm, setLineForm] = useState({
     lineProductId: "",
     productId: "ub",
@@ -4844,7 +4844,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
     setQuotes((current) => editingQuoteId ? current.map((item) => item.id === editingQuoteId ? bumpRecordVersion(item, quote, null) : item) : [withRecordMeta(quote), ...current]);
     setLines([]);
     setEditingQuoteId(null);
-    setQuoteMeta((current) => ({ ...current, title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "" }));
+    setQuoteMeta((current) => ({ ...current, customerId: "", customerName: "", title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "" }));
     setStatus(editingQuoteId ? `${quote.quoteNo} updated and returned to Draft.` : `${quote.quoteNo} raised from steel take-off quote builder.`);
   }
 
@@ -6102,7 +6102,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [auditLog, setAuditLog] = useState(savedAppState.auditLog || []);
   const [authStatus, setAuthStatus] = useState("Login provider pending");
   const [recordLocks, setRecordLocks] = useState(savedAppState.recordLocks || []);
-  const [newQuote, setNewQuote] = useState({ customerId: "c1", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
+  const [newQuote, setNewQuote] = useState({ customerId: "", title: "", description: "Fabrication work", quantity: 1, unitPrice: 500, validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", jobDeliveryAddress: "" });
   const [takeoffForm, setTakeoffForm] = useState({ productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Primed", length: 1, width: "", thickness: "", quantity: 1, holes: 0, plates: 0, notes: "", unitPrice: 0 });
   const [takeoffLines, setTakeoffLines] = useState([]);
   const [takeoffAiInput, setTakeoffAiInput] = useState("");
@@ -6111,8 +6111,8 @@ export default function FabricationProductionPlannerIntegrated() {
   const [takeoffImportStatus, setTakeoffImportStatus] = useState("");
   const [newStockItem, setNewStockItem] = useState({ productId: "ub", sectionSize: "", grade: "S355", finish: "Self colour", length: 6, width: "", quantity: 1, location: "", status: "In Stock", allocatedJobId: "", purchaseDocumentNo: "", notes: "" });
   const [newPo, setNewPo] = useState({
-    jobId: "j1",
-    supplierId: "sup1",
+    jobId: "",
+    supplierId: "",
     requiredBy: toIso(addDays(new Date(), 7)),
     lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: 6, finish: "Self colour" }, 1, 1)],
   });
@@ -6927,6 +6927,62 @@ export default function FabricationProductionPlannerIntegrated() {
     convertQuotePackageToJob(quotePackage);
   }
 
+
+  function createJobReworkQuote(job) {
+    const sourceQuote = quotes.find((quote) => quote.id === job.quoteId);
+    if (!sourceQuote) {
+      setAutomationStatus(`${job.jobNo} has no linked quote to rework. Create a new quote manually if this was a manual job.`);
+      setActiveTab("quotes");
+      return;
+    }
+    const reservedQuoteNumber = reserveDocumentNumberSync({ documentType: "quote", records: quotes, linkedSourceNumber: sourceQuote.quoteNo || "" });
+    const reworkQuote = withRecordMeta({
+      ...sourceQuote,
+      id: createEntityId("quote"),
+      quoteSequence: reservedQuoteNumber.sequence,
+      quoteNo: reservedQuoteNumber.number,
+      title: `${sourceQuote.title || job.title || "Job"} amendment`,
+      date: today,
+      validUntil: toIso(addDays(new Date(), 30)),
+      status: "Draft",
+      amendedFromQuoteId: sourceQuote.id,
+      amendedFromQuoteNo: sourceQuote.quoteNo || "",
+      reworkForJobId: job.id,
+      reworkForJobNo: job.jobNo,
+      takeoffLines: (sourceQuote.takeoffLines || []).map((line, index) => ({ ...line, id: `rework-line-${Date.now()}-${index}` })),
+      items: (sourceQuote.items || []).map((item, index) => ({ ...item, id: `rework-item-${Date.now()}-${index}` })),
+    });
+    setQuotes((current) => [reworkQuote, ...current]);
+    updateJob(job.id, { status: "Rework Required", notes: `${job.notes || ""}${job.notes ? "\n" : ""}Rework quote created: ${reworkQuote.quoteNo}` });
+    setAutomationStatus(`${reworkQuote.quoteNo} created as a draft rework quote for ${job.jobNo}.`);
+    setActiveTab("quotes");
+  }
+
+  function cancelJobAndReleaseStock(job) {
+    const confirmMessage = `Remove/cancel ${job.jobNo || "this job"}?\n\nThis will remove it from Job Register and Planner, cancel open delivery notes, and release stock allocated to this job where possible.`;
+    if (typeof window !== "undefined" && !window.confirm(confirmMessage)) return;
+    const nowIso = new Date().toISOString();
+    setJobs((current) => current.filter((item) => item.id !== job.id));
+    setDeliveryNotes((current) => current.map((note) => note.jobId === job.id ? { ...note, status: "Cancelled", cancelledAt: nowIso, cancellationReason: "Job removed/cancelled" } : note));
+    setPlannerQuotePackages((current) => current.map((pkg) => pkg.convertedJobId === job.id ? { ...pkg, inboxStatus: "Job Cancelled", cancelledJobAt: nowIso } : pkg));
+    setQuotes((current) => current.map((quote) => quote.id === job.quoteId ? { ...quote, status: quote.status === "Converted" ? "Job Cancelled" : quote.status, cancelledJobId: job.id, cancelledJobAt: nowIso } : quote));
+    setStockItems((current) => current.map((item) => {
+      const linkedToJob = item.allocatedJobId === job.id || item.jobId === job.id;
+      if (!linkedToJob) return item;
+      const isOffcut = item.stockLineType === "Offcut" || item.status === "Offcut";
+      return {
+        ...item,
+        allocatedJobId: "",
+        jobId: "",
+        status: isOffcut ? "Offcut" : "In Stock",
+        notes: `${item.notes || ""}${item.notes ? "\n" : ""}Released from cancelled job ${job.jobNo || job.id}.`,
+        lengthSegments: getStockSegments(item).map((segment) => ({ ...segment, allocatedJobId: "", jobId: "", status: isOffcut ? "Offcut" : "Available" })),
+      };
+    }));
+    if (selectedJobId === job.id) setSelectedJobId(jobs.find((item) => item.id !== job.id)?.id || "");
+    setAutomationStatus(`${job.jobNo || "Job"} removed from active jobs/planner and linked stock was released where possible.`);
+  }
+
   function updatePoLine(lineId, patch) {
     setNewPo((current) => ({
       ...current,
@@ -7001,7 +7057,7 @@ export default function FabricationProductionPlannerIntegrated() {
       setAutomationStatus(`${po.poNo} raised, but no stock lines were added. Check each PO line has product, section and ordered length.`);
     }
     updateJob(job.id, { status: "Waiting Material", materialsDue: newPo.requiredBy });
-    setNewPo({ ...newPo, lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: "", finish: "Self colour" }, 1, 1, customProducts)] });
+    setNewPo({ ...newPo, supplierId: "", supplierName: "", lines: [createPoLineFromPart({ productId: "ub", sectionSize: "203x102x23", length: "", finish: "Self colour" }, 1, 1, customProducts)] });
   }
 
   function addStockItem() {
@@ -7942,7 +7998,9 @@ export default function FabricationProductionPlannerIntegrated() {
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button className="rounded-xl border bg-white px-3 py-2 text-xs font-bold" onClick={() => setExpandedJobDetailsId(expandedJobDetailsId === job.id ? null : job.id)}>{expandedJobDetailsId === job.id ? "Hide details" : "Open details"}</button>
                     <button className="rounded-xl border bg-white px-3 py-2 text-xs font-bold" onClick={() => { setSelectedJobId(job.id); setActiveTab("planner"); }}>Open in planner</button>
-                    <button className="rounded-xl border bg-white px-3 py-2 text-xs font-bold" onClick={() => { setNewPo({ ...newPo, jobId: job.id }); setActiveTab("pos"); }}>Purchasing</button>
+                    <button className="rounded-xl border bg-white px-3 py-2 text-xs font-bold" onClick={() => { setNewPo({ ...newPo, jobId: job.id, supplierId: "", supplierName: "" }); setActiveTab("pos"); }}>Purchasing</button>
+                    {activeRole === "operations" ? <button className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800" onClick={() => createJobReworkQuote(job)}>Edit job / rework quote</button> : null}
+                    {activeRole === "operations" ? <button className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" onClick={() => cancelJobAndReleaseStock(job)}>Remove / cancel job</button> : null}
                     <button className={`rounded-xl px-3 py-2 text-xs font-bold text-white ${job.invoiceStatus === "Sent to Xero" ? "bg-emerald-600" : "bg-blue-700"}`} onClick={() => createXeroInvoice(job)}>
                       {job.invoiceStatus === "Sent to Xero" ? "Invoice Sent to Xero" : "Invoice / Xero"}
                     </button>
