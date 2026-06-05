@@ -874,6 +874,7 @@ function stockItemLinkedToJob(item = {}, job = {}) {
 function releaseStockAllocationsForJob(stockItems = [], job = {}) {
   if (!job?.id) return stockItems;
   const nowIso = new Date().toISOString();
+  const isAvailableSibling = (item = {}) => !item.allocatedJobId && !item.jobId && ["In Stock", "Offcut", "Available"].includes(item.status);
   const sourceIdsToRestore = new Set(
     (stockItems || [])
       .filter((item) => stockItemLinkedToJob(item, job))
@@ -881,22 +882,38 @@ function releaseStockAllocationsForJob(stockItems = [], job = {}) {
       .filter(Boolean)
   );
   const restoredRows = [];
-  const retainedRows = [];
+  const removedIds = new Set();
 
   sourceIdsToRestore.forEach((sourceId) => {
     const releasableGroup = (stockItems || []).filter((item) => {
       if ((item.sourceStockItemId || item.cutFromStockItemId || "") !== sourceId) return false;
-      if (stockItemLinkedToJob(item, job)) return true;
-      return !item.allocatedJobId && ["In Stock", "Offcut", "Available"].includes(item.status);
+      return stockItemLinkedToJob(item, job) || isAvailableSibling(item);
     });
-    if (!releasableGroup.length) return;
-    const template = releasableGroup[0];
-    const restoredLength = releasableGroup.reduce((sum, item) => sum + Number(item.length || getRemainingLengthForStockItem(item) || 0), 0);
+    const allocatedRows = releasableGroup.filter((item) => stockItemLinkedToJob(item, job));
+    if (!allocatedRows.length) return;
+    const template = allocatedRows[0] || releasableGroup[0];
+    const sourceLengthCandidates = allocatedRows.flatMap((item) => [
+      Number(item.sourceStockLengthM || 0),
+      Number(item.sourceOrderedLengthM || 0),
+      Number(item.originalLengthM || 0),
+      ...getStockSegments(item).map((segment) => Number(segment.originalLengthM || 0)),
+    ]).filter((value) => value > 0);
+    const fallbackRestoredLength = releasableGroup.reduce((sum, item) => {
+      const allocationLength = getStockAllocationRows(item, [job]).filter((allocation) => allocation.jobId === job.id).reduce((inner, allocation) => inner + Number(allocation.lengthM || 0), 0);
+      const remainingLength = !stockItemLinkedToJob(item, job) ? Number(item.length || getRemainingLengthForStockItem(item) || 0) : 0;
+      return sum + allocationLength + remainingLength;
+    }, 0);
+    const restoredLength = Math.max(...sourceLengthCandidates, fallbackRestoredLength, 0);
     if (restoredLength <= 0) return;
+    releasableGroup.forEach((item) => removedIds.add(item.id));
     const restored = {
       ...template,
       id: createEntityId("stock-restored"),
       length: restoredLength,
+      sourceStockLengthM: "",
+      sourceOrderedLengthM: "",
+      allocatedCutLengthM: "",
+      remainingLengthM: "",
       quantity: 1,
       status: "In Stock",
       stockLineType: "Restored",
@@ -910,32 +927,26 @@ function releaseStockAllocationsForJob(stockItems = [], job = {}) {
     restoredRows.push({ ...restored, lengthSegments: createLengthSegmentsForStockItem(restored) });
   });
 
-  (stockItems || []).forEach((item) => {
-    const sourceId = item.sourceStockItemId || item.cutFromStockItemId || "";
-    if (sourceId && sourceIdsToRestore.has(sourceId)) {
-      const releasableSibling = !item.allocatedJobId && ["In Stock", "Offcut", "Available"].includes(item.status);
-      if (stockItemLinkedToJob(item, job) || releasableSibling) return;
-    }
-    if (stockItemLinkedToJob(item, job)) {
-      const isOffcut = item.stockLineType === "Offcut" || item.status === "Offcut";
-      retainedRows.push({
-        ...item,
-        allocatedJobId: "",
-        allocatedJobNo: "",
-        jobId: "",
-        status: isOffcut ? "Offcut" : "In Stock",
-        notes: [item.notes, `Released from ${job.jobNo || job.id} for stock reallocation.`].filter(Boolean).join(" | "),
-        lengthSegments: getStockSegments(item).map((segment) => ({
-          ...segment,
-          allocatedJobId: "",
-          jobId: "",
-          status: isOffcut ? "Offcut" : "Available",
-          allocations: (segment.allocations || []).filter((allocation) => allocation.jobId !== job.id),
-        })),
-      });
-      return;
-    }
-    retainedRows.push(item);
+  const retainedRows = (stockItems || []).flatMap((item) => {
+    if (removedIds.has(item.id)) return [];
+    if (!stockItemLinkedToJob(item, job)) return [item];
+    const restoredLength = Number(item.sourceStockLengthM || item.sourceOrderedLengthM || item.length || getRemainingLengthForStockItem(item) || 0);
+    if (restoredLength <= 0) return [];
+    const restored = {
+      ...item,
+      id: createEntityId("stock-restored"),
+      length: restoredLength,
+      quantity: 1,
+      status: item.status === "Offcut" || item.stockLineType === "Offcut" ? "Offcut" : "In Stock",
+      stockLineType: "Restored",
+      allocatedJobId: "",
+      allocatedJobNo: "",
+      jobId: "",
+      sourceStockItemId: "",
+      cutFromStockItemId: "",
+      notes: [item.notes, `Released from ${job.jobNo || job.id} and returned to available stock.`].filter(Boolean).join(" | "),
+    };
+    return [{ ...restored, lengthSegments: createLengthSegmentsForStockItem(restored) }];
   });
 
   return [...retainedRows, ...restoredRows];
@@ -4132,7 +4143,7 @@ function JobSheet({ job, quote, customer, stockItems, companySettings, onSuggest
   );
 }
 
-function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts, onAddCustomProduct }) {
+function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, onAddStockItem, onUpdateStockItem, onAllocateStockItem, onScrapStockSegment, onCutAllocatedStockItem, onManualCutOffcutStockItem, customProducts, onAddCustomProduct, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const [addStockOpen, setAddStockOpen] = useState(false);
   const [productSetupOpen, setProductSetupOpen] = useState(false);
@@ -4183,9 +4194,13 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
   const totalAvailableLengthM = stockItems.reduce((sum, item) => sum + getRemainingLengthForStockItem(item), 0);
   const totalAllocatedLengthM = stockItems.reduce((sum, item) => sum + getAllocatedLengthForStockItem(item), 0);
   const isAllocatedInventoryItem = (item = {}) => Boolean(item.allocatedJobId) || ["Allocated", "Allocated Cut"].includes(item.stockLineType) || item.status === "Allocated" || getStockAllocationRows(item, jobs).length > 0;
+  const getInventoryJobForItem = (item = {}) => {
+    const allocation = getStockAllocationRows(item, jobs)[0];
+    return jobs.find((jobItem) => jobItem.id === item.allocatedJobId) || jobs.find((jobItem) => jobItem.id === allocation?.jobId) || null;
+  };
   const getInventoryJobGroupLabel = (item = {}) => {
     const allocation = getStockAllocationRows(item, jobs)[0];
-    const job = jobs.find((jobItem) => jobItem.id === item.allocatedJobId) || jobs.find((jobItem) => jobItem.id === allocation?.jobId);
+    const job = getInventoryJobForItem(item);
     return job?.jobNo || item.allocatedJobNo || allocation?.jobNo || item.allocatedJobId || "Allocated job";
   };
   const stockDisplayItems = [...stockItems].sort((a, b) => {
@@ -4198,9 +4213,10 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
   const stockDisplayRows = [];
   let lastInventoryGroup = "";
   stockDisplayItems.forEach((item) => {
-    const group = isAllocatedInventoryItem(item) ? `Allocated Materials - ${getInventoryJobGroupLabel(item)}` : "Stock Materials / Offcuts";
+    const itemIsAllocated = isAllocatedInventoryItem(item);
+    const group = itemIsAllocated ? `Allocated Materials - ${getInventoryJobGroupLabel(item)}` : "Stock Materials / Offcuts";
     if (group !== lastInventoryGroup) {
-      stockDisplayRows.push({ type: "group", id: `group-${group}`, label: group, allocated: isAllocatedInventoryItem(item) });
+      stockDisplayRows.push({ type: "group", id: `group-${group}`, label: group, allocated: itemIsAllocated, job: itemIsAllocated ? getInventoryJobForItem(item) : null });
       lastInventoryGroup = group;
     }
     stockDisplayRows.push({ type: "item", id: item.id, item });
@@ -4311,7 +4327,7 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
           <tbody>
             {stockItems.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={12}>No stock items yet. Open Add stock to enter manual stock or receive stock from purchasing.</td></tr> : null}
             {stockDisplayRows.map((row) => {
-              if (row.type === "group") return <tr key={row.id} className={row.allocated ? "bg-blue-100" : "bg-emerald-50"}><td colSpan={12} className="px-3 py-3 text-sm font-black uppercase tracking-wide text-blue-950">{row.label}</td></tr>;
+              if (row.type === "group") return <tr key={row.id} className={row.allocated ? "bg-blue-100" : "bg-emerald-50"}><td colSpan={12} className="px-3 py-3"><div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><span className="text-sm font-black uppercase tracking-wide text-blue-950">{row.label}</span>{row.allocated && row.job ? <button className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-black text-blue-700" onClick={() => printCuttingListPdf({ job: row.job, stockItems, productDatabase, companySettings, onRegisterDocument })}>Cutting List PDF</button> : null}</div></td></tr>;
               const item = row.item;
               const product = productDatabase.find((product) => product.id === item.productId);
               return (
@@ -5980,6 +5996,93 @@ function printPurchaseOrderPdf({ po, job, supplier, companySettings, onRegisterD
   printWindow.document.close();
 }
 
+function buildCuttingListPreviewHtml({ job, stockItems = [], productDatabase = [], companySettings }) {
+  const safeSettings = companySettings || initialCompanySettings;
+  const address = [safeSettings.addressLine1, safeSettings.addressLine2, safeSettings.city, safeSettings.county, safeSettings.postcode, safeSettings.country].filter(Boolean).join(", ");
+  const allocatedItems = (stockItems || []).filter((item) => stockItemLinkedToJob(item, job));
+  const rows = allocatedItems.flatMap((item) => {
+    const product = productDatabase.find((productItem) => productItem.id === item.productId);
+    return getStockSegments(item).flatMap((segment) => {
+      const allocations = (segment.allocations || []).filter((allocation) => allocation.jobId === job.id);
+      if (!allocations.length && item.allocatedJobId === job.id) {
+        allocations.push({ id: `${item.id}-allocation`, jobId: job.id, lengthM: Number(item.allocatedCutLengthM || item.length || 0), partId: item.sourcePartId || "", status: "Allocated" });
+      }
+      return allocations.map((allocation) => {
+        const sourceLengthM = Number(item.sourceStockLengthM || item.sourceOrderedLengthM || segment.originalLengthM || item.length || 0);
+        const cutLengthM = Number(allocation.lengthM || item.allocatedCutLengthM || 0);
+        const remainingLengthM = Math.max(0, Number(item.remainingLengthM ?? segment.availableLengthM ?? sourceLengthM - cutLengthM));
+        return `
+          <tr>
+            <td><strong>${product?.name || item.productId || ""}</strong><br><small>${item.sectionSize || ""} · ${item.grade || ""} · ${item.finish || ""}</small></td>
+            <td>${getStockTraceabilityNumber(item)}</td>
+            <td class="right"><strong>${formatLengthM(sourceLengthM)}</strong></td>
+            <td class="right"><strong>${formatLengthM(cutLengthM)}</strong></td>
+            <td class="right">${formatLengthM(remainingLengthM)}</td>
+            <td>${item.location || ""}</td>
+            <td>${item.notes || ""}</td>
+          </tr>
+        `;
+      });
+    });
+  }).join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Cutting List ${job?.jobNo || ""}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; }
+    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #1d4ed8; padding-bottom: 14px; }
+    .brand { display: flex; gap: 14px; align-items: flex-start; }
+    .logo { max-width: 135px; max-height: 70px; object-fit: contain; }
+    h1 { margin: 2px 0 0; font-size: 30px; }
+    .muted { color: #1d4ed8; font-size: 12px; }
+    .company { text-align: right; font-size: 11px; max-width: 260px; line-height: 1.45; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 16px 0; }
+    .box { border: 1px solid #bfdbfe; border-radius: 12px; padding: 10px; background: #eff6ff; }
+    .box h3 { margin: 0 0 6px; color: #1d4ed8; font-size: 11px; text-transform: uppercase; }
+    .box p { margin: 2px 0; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }
+    th { text-align: left; color: #1d4ed8; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #93c5fd; padding: 8px 6px; }
+    td { border-bottom: 1px solid #dbeafe; padding: 9px 6px; vertical-align: top; }
+    .right { text-align: right; }
+    .signoff { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-top: 28px; font-size: 12px; }
+    .line { border-top: 1px solid #64748b; padding-top: 6px; min-height: 28px; }
+    .note { margin-top: 16px; color: #1e40af; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      ${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}
+      <div><div class="muted">${safeSettings.name || "JDFabs"}</div><h1>Cutting List</h1><p class="muted">${job?.jobNo || ""}</p></div>
+    </div>
+    <div class="company"><strong>${safeSettings.legalName || safeSettings.name || "JDFabs"}</strong>${address ? `<br>${address}` : ""}${safeSettings.phone ? `<br>${safeSettings.phone}` : ""}${safeSettings.email ? `<br>${safeSettings.email}` : ""}</div>
+  </div>
+  <div class="grid">
+    <div class="box"><h3>Job</h3><p><strong>${job?.jobNo || ""}</strong></p><p>${job?.title || ""}</p></div>
+    <div class="box"><h3>Customer</h3><p>${job?.customerName || job?.customer || ""}</p></div>
+    <div class="box"><h3>Date</h3><p>${new Date().toLocaleDateString("en-GB")}</p></div>
+  </div>
+  <table><thead><tr><th>Material</th><th>PO / Source</th><th class="right">Source stock length</th><th class="right">Cut length</th><th class="right">Remaining offcut</th><th>Location</th><th>Notes</th></tr></thead><tbody>${rows || `<tr><td colspan="7">No allocated materials found for this job.</td></tr>`}</tbody></table>
+  <div class="signoff"><div class="line">Cut by</div><div class="line">Checked by</div><div class="line">Date</div></div>
+  <p class="note">Use this cutting list to cut allocated stock only. Remaining offcuts should be returned to Stock Inventory.</p>
+  <script>window.onload = function () { window.focus(); window.print(); };</script>
+</body>
+</html>`;
+}
+
+function printCuttingListPdf({ job, stockItems, productDatabase, companySettings, onRegisterDocument }) {
+  const printWindow = window.open("", "_blank", "width=900,height=1200");
+  if (!printWindow) return;
+  printWindow.document.open();
+  const html = buildCuttingListPreviewHtml({ job, stockItems, productDatabase, companySettings });
+  printWindow.document.write(html);
+  if (onRegisterDocument) onRegisterDocument({ html, documentType: "cutting_list_pdf", title: `Cutting List ${job?.jobNo || ""}`, relatedResource: "jobs", relatedResourceId: job?.id, jobId: job?.id, documentNo: job?.jobNo });
+  printWindow.document.close();
+}
+
 function buildJobSheetPreviewHtml({ job, quote, customer, companySettings }) {
   const safeSettings = companySettings || initialCompanySettings;
   const address = [safeSettings.addressLine1, safeSettings.addressLine2, safeSettings.city, safeSettings.county, safeSettings.postcode, safeSettings.country].filter(Boolean).join(", ");
@@ -7197,19 +7300,7 @@ export default function FabricationProductionPlannerIntegrated() {
     setDeliveryNotes((current) => current.map((note) => note.jobId === job.id ? { ...note, status: "Cancelled", cancelledAt: nowIso, cancellationReason: "Job removed/cancelled" } : note));
     setPlannerQuotePackages((current) => current.map((pkg) => pkg.convertedJobId === job.id ? { ...pkg, inboxStatus: "Job Cancelled", cancelledJobAt: nowIso } : pkg));
     setQuotes((current) => current.map((quote) => quote.id === job.quoteId ? { ...quote, status: quote.status === "Converted" ? "Job Cancelled" : quote.status, cancelledJobId: job.id, cancelledJobAt: nowIso } : quote));
-    setStockItems((current) => current.map((item) => {
-      const linkedToJob = item.allocatedJobId === job.id || item.jobId === job.id;
-      if (!linkedToJob) return item;
-      const isOffcut = item.stockLineType === "Offcut" || item.status === "Offcut";
-      return {
-        ...item,
-        allocatedJobId: "",
-        jobId: "",
-        status: isOffcut ? "Offcut" : "In Stock",
-        notes: `${item.notes || ""}${item.notes ? "\n" : ""}Released from cancelled job ${job.jobNo || job.id}.`,
-        lengthSegments: getStockSegments(item).map((segment) => ({ ...segment, allocatedJobId: "", jobId: "", status: isOffcut ? "Offcut" : "Available" })),
-      };
-    }));
+    setStockItems((current) => releaseStockAllocationsForJob(current, job));
     if (selectedJobId === job.id) setSelectedJobId(jobs.find((item) => item.id !== job.id)?.id || "");
     setAutomationStatus(`${job.jobNo || "Job"} removed from active jobs/planner and linked stock was released where possible.`);
   }
@@ -8171,6 +8262,8 @@ export default function FabricationProductionPlannerIntegrated() {
             onManualCutOffcutStockItem={manualCutOffcutStockItem}
             customProducts={customProducts}
             onAddCustomProduct={addCustomProduct}
+            companySettings={companySettings}
+            onRegisterDocument={registerGeneratedDocument}
           />
         ) : null}
 
