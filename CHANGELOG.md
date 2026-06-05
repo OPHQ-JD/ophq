@@ -1,3 +1,4 @@
+- 2026-06-05: [UI/layout + file handling + stock/inventory logic] Applied approved landscape job sheet/cutting list PDF layouts and added stock inventory size search for available stock/offcuts. Pricing impact: none. Tests: Vite build, job sheet PDF, cutting list PDF, stock search.
 - 2026-06-04: [bug fix + stock/inventory logic] Force top/bottom plate material demand to match flat bar stock by width/thickness regardless of visible product naming. Pricing impact: none. Tests: top/bottom plate flat bar stock allocation before enquiry.
 # Changelog
 
