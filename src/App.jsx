@@ -961,8 +961,11 @@ function runStockLengthAllocationTests() {
   const tooLongStatus = getStockStatusForPart({ ...jobPart, id: "test-part-9m", length: 9, quantity: 1 }, afterAllocation, "job-c");
   const flatPlatePart = { id: "bottom-plate-test", productId: "flat", sectionSize: "300x10", grade: "S355", finish: "Self colour", length: 6, quantity: 1 };
   const flatBarStock = { id: "flat-stock-test", productId: "flat", sectionSize: "300 x 10", grade: "S355", finish: "Self colour", length: 6, quantity: 1, status: "In Stock", allocatedJobId: "" };
+  const flatBarStockDescriptionOnly = { id: "flat-stock-description-test", productId: "custom-flat", sectionSize: "", description: "Flat Bar · 300x10 · 6m", grade: "S355", finish: "Self colour", length: 6, quantity: 1, status: "In Stock", allocatedJobId: "" };
   const flatPlateStatus = getStockStatusForPart(flatPlatePart, [flatBarStock], "job-flat");
   const flatPlateAllocatedRows = allocateExistingStockRowsForJob([flatBarStock], { id: "job-flat", jobNo: "JD-FLAT", partsList: [flatPlatePart] });
+  const flatPlateDescriptionOnlyRows = allocateExistingStockRowsForJob([flatBarStockDescriptionOnly], { id: "job-flat-description", jobNo: "JD-FLAT-DESC", partsList: [flatPlatePart] });
+  const flatPlateDetailTextRows = allocateExistingStockRowsForJob([flatBarStock], { id: "job-flat-detail", jobNo: "JD-FLAT-DETAIL", partsList: [{ ...flatPlatePart, topPlateRequired: "No", sectionSize: "", productId: "ub", processDetails: ["Top plate 10mm x 300mm x 6m x1"] }] });
   const bestFitStockRows = allocateExistingStockRowsForJob([
     { id: "stock-12-2", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 12.2, quantity: 1, status: "In Stock", allocatedJobId: "" },
     { id: "stock-11", productId: "ub", sectionSize: "203x102x23", grade: "S355", finish: "Self colour", length: 11, quantity: 1, status: "In Stock", allocatedJobId: "" },
@@ -978,6 +981,8 @@ function runStockLengthAllocationTests() {
     { name: "Second 8m job can use remaining 8.2m", passed: secondJobStatus.label === "On Order" || secondJobStatus.label === "Available" },
     { name: "Top/bottom plate demand matches manually entered flat bar stock size", passed: flatPlateStatus.label === "Available" },
     { name: "Top/bottom plate demand allocates matching flat bar stock before enquiry", passed: flatPlateAllocatedRows.some((item) => item.status === "Allocated" && item.allocatedJobId === "job-flat") },
+    { name: "Top/bottom plate demand matches flat size held in stock description/custom product", passed: flatPlateDescriptionOnlyRows.some((item) => item.status === "Allocated" && item.allocatedJobId === "job-flat-description") },
+    { name: "Top/bottom plate material parsed from operation/detail text allocates flat bar stock", passed: flatPlateDetailTextRows.some((item) => item.status === "Allocated" && item.allocatedJobId === "job-flat-detail") },
     { name: "Existing stock allocation chooses shortest suitable length", passed: bestFitStockRows.some((item) => item.status === "Allocated" && item.sourceStockItemId === "stock-11") },
     { name: "Recalculate stock releases old allocation and picks best length", passed: releasedBestFitRows.some((item) => item.status === "Allocated" && item.sourceStockItemId === "stock-11-recalc") },
     { name: "9m job is still missing after 4m allocation", passed: tooLongStatus.label === "Missing" || tooLongStatus.missingLengthM > 0 },
@@ -3896,9 +3901,28 @@ function buildFlatMaterialSectionSize(widthMm, thicknessMm) {
 
 
 function parseFlatMaterialSectionSize(sectionSize = "") {
-  const match = String(sectionSize || "").match(/([0-9]+(?:[.][0-9]+)?)\s*x\s*([0-9]+(?:[.][0-9]+)?)/i);
+  const text = String(sectionSize || "").toLowerCase().replace(/×/g, "x");
+  const match = text.match(/([0-9]+(?:[.][0-9]+)?)\s*(?:mm)?\s*x\s*([0-9]+(?:[.][0-9]+)?)\s*(?:mm)?/i);
   if (!match) return { width: "", thickness: "" };
   return { width: match[1], thickness: match[2] };
+}
+
+function getFlatMaterialLookupText(value = {}) {
+  if (typeof value === "string") return value;
+  const dimensionHints = [];
+  const width = value.flatWidth || value.width || value.plateWidth || value.topPlateWidth || value.bottomPlateWidth || "";
+  const thickness = value.flatThickness || value.thickness || value.plateThickness || value.topPlateThickness || value.bottomPlateThickness || "";
+  if (width && thickness) dimensionHints.push(`${width}x${thickness}`);
+  if (thickness && width) dimensionHints.push(`${thickness}x${width}`);
+  return [
+    value.sectionSize,
+    value.size,
+    value.productName,
+    value.name,
+    value.description,
+    value.notes,
+    ...dimensionHints,
+  ].filter(Boolean).join(" ");
 }
 
 function buildPurchasingFlatPatch(currentLine = {}, patch = {}) {
@@ -3912,6 +3936,48 @@ function buildPurchasingFlatPatch(currentLine = {}, patch = {}) {
     thickness,
     sectionSize: buildFlatMaterialSectionSize(width, thickness),
   };
+}
+
+
+function getPlateMaterialDemandFromDetailText(detailText = "", item = {}, job = {}, index = 0) {
+  const text = String(detailText || "").replace(/×/g, "x");
+  const matches = [...text.matchAll(/\b(top|bottom)\s+plate\s+([0-9]+(?:[.][0-9]+)?)\s*mm\s*x\s*([0-9]+(?:[.][0-9]+)?)\s*mm\s*x\s*([0-9]+(?:[.][0-9]+)?)\s*m(?:\s*x\s*([0-9]+(?:[.][0-9]+)?))?/gi)];
+  return matches.map((match, matchIndex) => {
+    const type = String(match[1] || "plate").toLowerCase();
+    const thickness = Number(match[2] || 0);
+    const width = Number(match[3] || 0);
+    const length = Number(match[4] || 0);
+    const quantity = Math.max(1, Number(match[5] || item.quantity || 1));
+    const sectionSize = buildFlatMaterialSectionSize(width, thickness);
+    if (!sectionSize || !length) return null;
+    return {
+      id: `${item.id || `job-part-${job.id}-${index}`}-${type}-plate-detail-material-${matchIndex + 1}`,
+      productId: "flat",
+      description: `${type === "top" ? "Top" : "Bottom"} plate / flat ${sectionSize}`,
+      sectionSize,
+      grade: item.grade || "",
+      finish: "Self colour",
+      length,
+      requiredCutLength: length,
+      width,
+      thickness,
+      quantity,
+      weightKg: 0,
+      materialDemandType: `${type}-plate`,
+      parentQuoteLineId: item.id || "",
+      notes: `${type === "top" ? "Top" : "Bottom"} plate material parsed from quote line details.`,
+    };
+  }).filter(Boolean);
+}
+
+function getPlateMaterialDemandsFromQuoteItemText(item = {}, job = {}, index = 0) {
+  const detailText = [
+    ...(Array.isArray(item.processDetails) ? item.processDetails : []),
+    item.details,
+    item.notes,
+    item.description,
+  ].filter(Boolean).join(" · ");
+  return getPlateMaterialDemandFromDetailText(detailText, item, job, index);
 }
 
 function getQuoteLineMaterialDemands(item = {}, job = {}, index = 0) {
@@ -3963,6 +4029,11 @@ function getQuoteLineMaterialDemands(item = {}, job = {}, index = 0) {
   };
   addPlateDemand("top");
   addPlateDemand("bottom");
+  const parsedPlateDemands = getPlateMaterialDemandsFromQuoteItemText(item, job, index);
+  parsedPlateDemands.forEach((parsedDemand) => {
+    const duplicate = demands.some((demand) => isFlatOrPlateDemand(demand) && flatPlateSectionsMatch(getFlatMaterialLookupText(demand), getFlatMaterialLookupText(parsedDemand)) && Number(getPartCutLengthM(demand) || 0) === Number(getPartCutLengthM(parsedDemand) || 0));
+    if (!duplicate) demands.push(parsedDemand);
+  });
   return demands;
 }
 
@@ -3990,7 +4061,8 @@ function isFlatOrPlateProductId(productId = "") {
 
 function isFlatOrPlateStockItem(item = {}) {
   const text = [item.productId, item.productName, item.name, item.category, item.description, item.notes, item.sectionSize].filter(Boolean).join(" ").toLowerCase();
-  return text.includes("flat") || text.includes("plate") || Boolean(parseFlatMaterialSectionSize(item.sectionSize || "").width && parseFlatMaterialSectionSize(item.sectionSize || "").thickness);
+  const parsed = parseFlatMaterialSectionSize(getFlatMaterialLookupText(item));
+  return text.includes("flat") || text.includes("plate") || Boolean(parsed.width && parsed.thickness);
 }
 
 function isFlatOrPlateDemand(part = {}) {
@@ -4018,13 +4090,15 @@ function stockMatchesPart(stockItem, part) {
   const partProductId = String(part.productId || "").toLowerCase();
   const flatPlateDemand = isFlatOrPlateDemand(part);
   const stockIsFlatPlate = isFlatOrPlateStockItem(stockItem);
+  const stockLookupSection = flatPlateDemand ? getFlatMaterialLookupText(stockItem) : stockItem.sectionSize;
+  const partLookupSection = flatPlateDemand ? getFlatMaterialLookupText(part) : part.sectionSize;
   const sameProduct = !partProductId
     || stockProductId === partProductId
     || (flatPlateDemand && stockIsFlatPlate)
-    || (flatPlateDemand && flatPlateSectionsMatch(stockItem.sectionSize, part.sectionSize));
+    || (flatPlateDemand && flatPlateSectionsMatch(stockLookupSection, partLookupSection));
   const sameSection = !part.sectionSize
     || (flatPlateDemand
-      ? flatPlateSectionsMatch(stockItem.sectionSize, part.sectionSize)
+      ? flatPlateSectionsMatch(stockLookupSection, partLookupSection)
       : normaliseSectionKey(stockItem.sectionSize) === normaliseSectionKey(part.sectionSize));
   const partGrade = String(part.grade || "").toLowerCase();
   const stockGrade = String(stockItem.grade || "").toLowerCase();
