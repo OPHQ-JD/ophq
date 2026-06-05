@@ -4150,6 +4150,7 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
   const emptyStockProductOption = { id: createEntityId("stock-product-option"), size: "", price: "", productionMinutes: "" };
   const [stockProductDraft, setStockProductDraft] = useState({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [emptyStockProductOption] });
   const [stockSetupStatus, setStockSetupStatus] = useState("");
+  const [stockSearch, setStockSearch] = useState("");
 
   function updateStockProductOption(optionId, patch) {
     setStockProductDraft((current) => ({ ...current, optionRows: (current.optionRows || []).map((row) => row.id === optionId ? { ...row, ...patch } : row) }));
@@ -4203,7 +4204,18 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
     const job = getInventoryJobForItem(item);
     return job?.jobNo || item.allocatedJobNo || allocation?.jobNo || item.allocatedJobId || "Allocated job";
   };
-  const stockDisplayItems = [...stockItems].sort((a, b) => {
+  const stockSearchNeedle = normaliseSectionKey(stockSearch);
+  const stockSearchActive = Boolean(stockSearchNeedle);
+  const stockSearchMatchesItem = (item = {}) => {
+    if (!stockSearchActive) return true;
+    const product = productDatabase.find((productItem) => productItem.id === item.productId);
+    const searchable = [product?.name, item.productId, item.sectionSize, item.grade, item.finish, item.location, item.notes, item.purchaseDocumentNo].filter(Boolean).join(" ");
+    return normaliseSectionKey(searchable).includes(stockSearchNeedle);
+  };
+  const stockItemsForDisplay = stockSearchActive
+    ? stockItems.filter((item) => !isAllocatedInventoryItem(item) && ["In Stock", "Offcut", "Available"].includes(item.status) && stockSearchMatchesItem(item))
+    : stockItems;
+  const stockDisplayItems = [...stockItemsForDisplay].sort((a, b) => {
     const aAllocated = isAllocatedInventoryItem(a);
     const bAllocated = isAllocatedInventoryItem(b);
     if (aAllocated !== bAllocated) return aAllocated ? -1 : 1;
@@ -4305,6 +4317,11 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
             <h3 className="text-lg font-bold">Allocated materials and stock list</h3>
             <p className="text-sm text-blue-800">Allocated materials are grouped by job at the top. General stock and offcuts are listed below.</p>
           </div>
+          <div className="w-full md:w-96">
+            <label className="block text-xs font-bold uppercase tracking-wide text-blue-600">Search available stock/offcuts</label>
+            <TextInput value={stockSearch} onChange={(event) => setStockSearch(event.target.value)} placeholder="Type section/size e.g. 254x102x25" />
+            {stockSearchActive ? <p className="mt-1 text-xs font-semibold text-blue-700">Showing available stock/offcuts matching “{stockSearch}”. Clear search to show allocated materials again.</p> : null}
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1200px] border-collapse text-sm">
@@ -4326,6 +4343,7 @@ function StockInventoryTab({ stockItems, jobs, newStockItem, setNewStockItem, on
           </thead>
           <tbody>
             {stockItems.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={12}>No stock items yet. Open Add stock to enter manual stock or receive stock from purchasing.</td></tr> : null}
+            {stockItems.length > 0 && stockDisplayRows.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={12}>No available stock/offcuts match this search.</td></tr> : null}
             {stockDisplayRows.map((row) => {
               if (row.type === "group") return <tr key={row.id} className={row.allocated ? "bg-blue-100" : "bg-emerald-50"}><td colSpan={12} className="px-3 py-3"><div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><span className="text-sm font-black uppercase tracking-wide text-blue-950">{row.label}</span>{row.allocated && row.job ? <button className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-black text-blue-700" onClick={() => printCuttingListPdf({ job: row.job, stockItems, productDatabase, companySettings, onRegisterDocument })}>Cutting List PDF</button> : null}</div></td></tr>;
               const item = row.item;
@@ -5996,28 +6014,28 @@ function printPurchaseOrderPdf({ po, job, supplier, companySettings, onRegisterD
   printWindow.document.close();
 }
 
-function buildCuttingListPreviewHtml({ job, stockItems = [], productDatabase = [], companySettings }) {
+function buildCuttingListPreviewHtml({ job, stockItems, productDatabase, companySettings }) {
   const safeSettings = companySettings || initialCompanySettings;
-  const address = [safeSettings.addressLine1, safeSettings.addressLine2, safeSettings.city, safeSettings.county, safeSettings.postcode, safeSettings.country].filter(Boolean).join(", ");
   const allocatedItems = (stockItems || []).filter((item) => stockItemLinkedToJob(item, job));
-  const rows = allocatedItems.flatMap((item) => {
+  const rows = allocatedItems.flatMap((item, itemIndex) => {
     const product = productDatabase.find((productItem) => productItem.id === item.productId);
     return getStockSegments(item).flatMap((segment) => {
       const allocations = (segment.allocations || []).filter((allocation) => allocation.jobId === job.id);
       if (!allocations.length && item.allocatedJobId === job.id) {
         allocations.push({ id: `${item.id}-allocation`, jobId: job.id, lengthM: Number(item.allocatedCutLengthM || item.length || 0), partId: item.sourcePartId || "", status: "Allocated" });
       }
-      return allocations.map((allocation) => {
+      return allocations.map((allocation, allocationIndex) => {
         const sourceLengthM = Number(item.sourceStockLengthM || item.sourceOrderedLengthM || segment.originalLengthM || item.length || 0);
         const cutLengthM = Number(allocation.lengthM || item.allocatedCutLengthM || 0);
         const remainingLengthM = Math.max(0, Number(item.remainingLengthM ?? segment.availableLengthM ?? sourceLengthM - cutLengthM));
         return `
           <tr>
-            <td><strong>${product?.name || item.productId || ""}</strong><br><small>${item.sectionSize || ""} · ${item.grade || ""} · ${item.finish || ""}</small></td>
+            <td class="line-no">${itemIndex + 1}.${allocationIndex + 1}</td>
+            <td><strong>${product?.name || item.productId || ""}</strong><br><span>${item.sectionSize || ""} · ${item.grade || ""} · ${item.finish || ""}</span></td>
             <td>${getStockTraceabilityNumber(item)}</td>
-            <td class="right"><strong>${formatLengthM(sourceLengthM)}</strong></td>
-            <td class="right"><strong>${formatLengthM(cutLengthM)}</strong></td>
-            <td class="right">${formatLengthM(remainingLengthM)}</td>
+            <td class="number">${formatLengthM(sourceLengthM)}</td>
+            <td class="number strong">${formatLengthM(cutLengthM)}</td>
+            <td class="number">${formatLengthM(remainingLengthM)}</td>
             <td>${item.location || ""}</td>
             <td>${item.notes || ""}</td>
           </tr>
@@ -6031,43 +6049,48 @@ function buildCuttingListPreviewHtml({ job, stockItems = [], productDatabase = [
   <meta charset="utf-8" />
   <title>Cutting List ${job?.jobNo || ""}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
-    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; }
-    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #1d4ed8; padding-bottom: 14px; }
-    .brand { display: flex; gap: 14px; align-items: flex-start; }
-    .logo { max-width: 135px; max-height: 70px; object-fit: contain; }
-    h1 { margin: 2px 0 0; font-size: 30px; }
-    .muted { color: #1d4ed8; font-size: 12px; }
-    .company { text-align: right; font-size: 11px; max-width: 260px; line-height: 1.45; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 16px 0; }
-    .box { border: 1px solid #bfdbfe; border-radius: 12px; padding: 10px; background: #eff6ff; }
-    .box h3 { margin: 0 0 6px; color: #1d4ed8; font-size: 11px; text-transform: uppercase; }
-    .box p { margin: 2px 0; font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }
-    th { text-align: left; color: #1d4ed8; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #93c5fd; padding: 8px 6px; }
-    td { border-bottom: 1px solid #dbeafe; padding: 9px 6px; vertical-align: top; }
-    .right { text-align: right; }
-    .signoff { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-top: 28px; font-size: 12px; }
-    .line { border-top: 1px solid #64748b; padding-top: 6px; min-height: 28px; }
-    .note { margin-top: 16px; color: #1e40af; font-size: 11px; }
+    @page { size: A4 landscape; margin: 9mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; font-size: 10px; }
+    .top { display: grid; grid-template-columns: 70px 1fr auto; gap: 10px; align-items: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 6px; }
+    .logo { max-width: 62px; max-height: 54px; object-fit: contain; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: -0.04em; }
+    .company { color: #1d4ed8; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
+    .jobno { text-align: right; }
+    .jobno strong { display: block; font-size: 20px; }
+    .summary { display: grid; grid-template-columns: 1.2fr 1fr .75fr; gap: 8px; margin: 8px 0; }
+    .box { border: 1px solid #bfdbfe; border-radius: 8px; padding: 6px 8px; background: #eff6ff; min-height: 44px; }
+    .label { color: #1d4ed8; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    .value { margin-top: 2px; font-size: 11px; font-weight: 800; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9px; }
+    th { text-align: left; color: #1d4ed8; background: #eaf2ff; border: 1px solid #93c5fd; padding: 5px 4px; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; }
+    td { border: 1px solid #cbd5e1; padding: 5px 4px; vertical-align: top; line-height: 1.25; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    .line-no { width: 28px; text-align: center; font-weight: 800; }
+    .number { text-align: right; white-space: nowrap; }
+    .strong { font-weight: 900; color: #0f172a; }
+    span { color: #1e40af; }
+    .footer { display: grid; grid-template-columns: 1fr 1fr 1fr 2fr; gap: 10px; margin-top: 9px; align-items: end; }
+    .sign { border-top: 1px solid #64748b; padding-top: 4px; min-height: 26px; font-size: 9px; }
+    .note { color: #1e40af; font-size: 8px; line-height: 1.25; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="brand">
-      ${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}
-      <div><div class="muted">${safeSettings.name || "JDFabs"}</div><h1>Cutting List</h1><p class="muted">${job?.jobNo || ""}</p></div>
-    </div>
-    <div class="company"><strong>${safeSettings.legalName || safeSettings.name || "JDFabs"}</strong>${address ? `<br>${address}` : ""}${safeSettings.phone ? `<br>${safeSettings.phone}` : ""}${safeSettings.email ? `<br>${safeSettings.email}` : ""}</div>
+  <div class="top">
+    <div>${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}</div>
+    <div><div class="company">JD Fabrications Welding Company Ltd</div><h1>Cutting List</h1></div>
+    <div class="jobno"><div class="label">Job</div><strong>${job?.jobNo || ""}</strong></div>
   </div>
-  <div class="grid">
-    <div class="box"><h3>Job</h3><p><strong>${job?.jobNo || ""}</strong></p><p>${job?.title || ""}</p></div>
-    <div class="box"><h3>Customer</h3><p>${job?.customerName || job?.customer || ""}</p></div>
-    <div class="box"><h3>Date</h3><p>${new Date().toLocaleDateString("en-GB")}</p></div>
+  <div class="summary">
+    <div class="box"><div class="label">Job / Site</div><div class="value">${job?.title || ""}</div></div>
+    <div class="box"><div class="label">Customer</div><div class="value">${job?.customerName || job?.customer || ""}</div></div>
+    <div class="box"><div class="label">Date</div><div class="value">${new Date().toLocaleDateString("en-GB")}</div></div>
   </div>
-  <table><thead><tr><th>Material</th><th>PO / Source</th><th class="right">Source stock length</th><th class="right">Cut length</th><th class="right">Remaining offcut</th><th>Location</th><th>Notes</th></tr></thead><tbody>${rows || `<tr><td colspan="7">No allocated materials found for this job.</td></tr>`}</tbody></table>
-  <div class="signoff"><div class="line">Cut by</div><div class="line">Checked by</div><div class="line">Date</div></div>
-  <p class="note">Use this cutting list to cut allocated stock only. Remaining offcuts should be returned to Stock Inventory.</p>
+  <table>
+    <thead><tr><th style="width:30px">#</th><th style="width:210px">Material</th><th style="width:105px">PO / Source</th><th style="width:82px">Source stock</th><th style="width:70px">Cut length</th><th style="width:80px">Remaining</th><th style="width:95px">Location</th><th>Notes</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="8">No allocated materials found for this job.</td></tr>`}</tbody>
+  </table>
+  <div class="footer"><div class="sign">Cut by</div><div class="sign">Checked by</div><div class="sign">Date</div><div class="note">Use this cutting list to cut allocated stock only. Remaining offcuts should be returned to Stock Inventory.</div></div>
   <script>window.onload = function () { window.focus(); window.print(); };</script>
 </body>
 </html>`;
@@ -6085,47 +6108,33 @@ function printCuttingListPdf({ job, stockItems, productDatabase, companySettings
 
 function buildJobSheetPreviewHtml({ job, quote, customer, companySettings }) {
   const safeSettings = companySettings || initialCompanySettings;
-  const address = [safeSettings.addressLine1, safeSettings.addressLine2, safeSettings.city, safeSettings.county, safeSettings.postcode, safeSettings.country].filter(Boolean).join(", ");
   const parts = getJobPartsList(job, quote);
   const rows = parts.map((part, index) => {
     const sourceItem = (quote?.items || job.partsList || [])[index] || {};
     const details = sourceItem.processDetails?.length ? sourceItem.processDetails.join(" · ") : part.notes || "";
     return `
       <tr>
-        <td><strong>${part.description || ""}</strong>${details ? `<br><small>${details}</small>` : ""}</td>
+        <td><strong>${part.description || ""}</strong>${details ? `<br><span>${details}</span>` : ""}</td>
         <td>${part.sectionSize || ""}</td>
         <td>${part.grade || ""}</td>
         <td>${part.finish || ""}</td>
-        <td class="right">${part.length ? `${part.length}m` : ""}</td>
-        <td class="right">${part.quantity || 0}</td>
-        <td class="right">${part.weightKg ? `${Number(part.weightKg).toFixed(2)}kg` : ""}</td>
+        <td class="number">${part.length ? `${part.length}m` : ""}</td>
+        <td class="number">${part.quantity || 0}</td>
+        <td class="number">${part.weightKg ? `${Number(part.weightKg).toFixed(2)}kg` : ""}</td>
       </tr>
     `;
   }).join("");
-  const operationsTable = `
-    <table class="operations-table">
-      <thead>
-        <tr>
-          <th class="op-col">OP</th>
-          <th class="operation-col">Workshop operation</th>
-          <th class="trace-col">Checks / traceability</th>
-          <th class="completed-col">Completed by</th>
-          <th class="date-col">Date</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td class="op-number">1</td><td>Cut and process parts as specified.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr><td class="op-number">2</td><td>Assemble and weld components.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr class="trace-row"><td></td><td>Welding traceability 1</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr class="trace-row"><td></td><td>Welding traceability 2</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr class="trace-row"><td></td><td>Welding traceability 3</td><td>Machine No: <span class="fill-line"></span><br>Wire batch No: <span class="fill-line"></span></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr><td class="op-number">3</td><td>Check all dimensions are correct.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr><td class="op-number">4</td><td>Paint and label parts as required.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr><td class="op-number">5</td><td>Assemble all parts and check job is complete.</td><td class="write-line"></td><td class="write-line"></td><td class="write-line"></td></tr>
-        <tr class="sign-row"><td class="op-number">6</td><td>Final inspection and sign off.</td><td class="signature-cell">Signature:</td><td class="write-line"></td><td class="write-line"></td></tr>
-      </tbody>
-    </table>
-  `;
+  const operationsRows = [
+    ["1", "Cut and process parts as specified.", ""],
+    ["2", "Assemble and weld components.", ""],
+    ["", "Welding traceability 1", "Machine No: __________<br>Wire batch No: __________"],
+    ["", "Welding traceability 2", "Machine No: __________<br>Wire batch No: __________"],
+    ["", "Welding traceability 3", "Machine No: __________<br>Wire batch No: __________"],
+    ["3", "Check all dimensions are correct.", ""],
+    ["4", "Paint and label parts as required.", ""],
+    ["5", "Assemble all parts and check job is complete.", ""],
+    ["6", "Final inspection and sign off.", "Signature:"],
+  ].map((row) => `<tr><td class="op">${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td><td></td><td></td></tr>`).join("");
 
   return `<!doctype html>
 <html>
@@ -6133,61 +6142,61 @@ function buildJobSheetPreviewHtml({ job, quote, customer, companySettings }) {
   <meta charset="utf-8" />
   <title>${job.jobNo || "Job Sheet"}</title>
   <style>
-    @page { size: A4; margin: 16mm; }
-    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; }
-    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 1px solid #bfdbfe; padding-bottom: 16px; }
-    .brand { display: flex; gap: 16px; align-items: flex-start; }
-    .logo { max-width: 150px; max-height: 80px; object-fit: contain; }
-    h1 { margin: 4px 0 0; font-size: 30px; }
-    h2 { margin: 24px 0 8px; font-size: 18px; }
-    .muted { color: #1e40af; font-size: 12px; }
-    .company { text-align: right; font-size: 12px; max-width: 260px; line-height: 1.45; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; border-bottom: 1px solid #dbeafe; padding: 20px 0; }
-    .box { background: #eff6ff; border-radius: 12px; padding: 12px; font-size: 12px; }
-    .box strong { display: block; color: #0f172a; font-size: 14px; margin-top: 3px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
-    th { text-align: left; color: #2563eb; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #bfdbfe; padding: 8px; }
-    td { border-bottom: 1px solid #dbeafe; padding: 9px 8px; vertical-align: top; }
-    .operations-table { font-size: 11px; border: 1px solid #94a3b8; table-layout: fixed; page-break-inside: avoid; }
-    .operations-table th { color: #0f172a; background: #eaf2ff; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid #94a3b8; padding: 7px 8px; }
-    .operations-table td { border: 1px solid #cbd5e1; padding: 8px; color: #0f172a; line-height: 1.35; vertical-align: top; }
-    .operations-table tbody tr:nth-child(even) { background: #f8fafc; }
-    .operations-table .trace-row { background: #f1f5f9; }
-    .op-col { width: 38px; }
-    .operation-col { width: 32%; }
-    .trace-col { width: 30%; }
-    .completed-col { width: 18%; }
-    .date-col { width: 90px; }
-    .op-number { text-align: center; font-weight: 700; }
-    .write-line { min-height: 30px; }
-    .fill-line { display: inline-block; width: 80px; border-bottom: 1px solid #334155; transform: translateY(-2px); }
-    .signature-cell { min-height: 42px; }
-    .sign-row td { height: 48px; }
-    small { color: #1d4ed8; }
-    .right { text-align: right; }
-    .notes { margin-top: 18px; border: 1px solid #bfdbfe; border-radius: 12px; min-height: 80px; padding: 12px; font-size: 12px; }
-    .note { margin-top: 20px; color: #1d4ed8; font-size: 11px; }
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 0; font-size: 9px; }
+    .top { display: grid; grid-template-columns: 66px 1fr auto; gap: 10px; align-items: center; border-bottom: 2px solid #1d4ed8; padding-bottom: 5px; }
+    .logo { max-width: 58px; max-height: 50px; object-fit: contain; }
+    .company { color: #1d4ed8; font-weight: 800; font-size: 9px; text-transform: uppercase; letter-spacing: .12em; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: -0.04em; }
+    .jobno { text-align: right; }
+    .jobno strong { display: block; font-size: 20px; }
+    .label { color: #1d4ed8; font-size: 7px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
+    .summary { display: grid; grid-template-columns: 1.1fr 1.1fr 1fr; gap: 7px; margin: 7px 0; }
+    .box { border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; padding: 5px 7px; min-height: 38px; }
+    .box strong { display: block; font-size: 11px; margin-top: 1px; }
+    .page { display: grid; grid-template-columns: 48% 52%; gap: 8px; align-items: start; }
+    h2 { font-size: 12px; margin: 0 0 5px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8px; }
+    th { text-align: left; color: #1d4ed8; background: #eaf2ff; border: 1px solid #93c5fd; padding: 4px 3px; font-size: 7px; text-transform: uppercase; letter-spacing: .04em; }
+    td { border: 1px solid #cbd5e1; padding: 4px 3px; vertical-align: top; line-height: 1.2; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    span { color: #1e40af; }
+    .number { text-align: right; white-space: nowrap; }
+    .materials th:nth-child(1) { width: 34%; }
+    .materials th:nth-child(2) { width: 20%; }
+    .materials th:nth-child(3) { width: 10%; }
+    .materials th:nth-child(4) { width: 13%; }
+    .materials th:nth-child(5), .materials th:nth-child(6), .materials th:nth-child(7) { width: 7%; }
+    .operations td { height: 23px; }
+    .operations .op { width: 26px; text-align: center; font-weight: 900; }
+    .notes { margin-top: 7px; border: 1px solid #bfdbfe; border-radius: 8px; min-height: 42px; padding: 6px; font-size: 8px; }
+    .note { margin-top: 5px; color: #1d4ed8; font-size: 7px; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="brand">
-      ${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}
-      <div><div class="muted">${safeSettings.name || "JDFabs"}</div><h1>Job Sheet</h1><p class="muted">${job.jobNo || ""}</p></div>
+  <div class="top">
+    <div>${safeSettings.logoDataUrl ? `<img class="logo" src="${safeSettings.logoDataUrl}" />` : ""}</div>
+    <div><div class="company">JD Fabrications Welding Company Ltd</div><h1>Job Sheet</h1></div>
+    <div class="jobno"><div class="label">Job</div><strong>${job.jobNo || ""}</strong></div>
+  </div>
+  <div class="summary">
+    <div class="box"><div class="label">Customer</div><strong>${customer?.company || job.customer || ""}</strong>${customer?.contact || ""}${customer?.phone ? `<br>${customer.phone}` : ""}</div>
+    <div class="box"><div class="label">Job</div><strong>${job.title || ""}</strong>Quote: ${quote?.quoteNo || "Manual job"}<br>Status: ${job.status || ""}</div>
+    <div class="box"><div class="label">Dates</div><strong>Start: ${job.start || ""}</strong>Deadline: ${job.deadline || ""}<br>Materials due: ${job.materialsDue || ""}</div>
+  </div>
+  <div class="page">
+    <div>
+      <h2>Job lines / details</h2>
+      <table class="materials"><thead><tr><th>Line / details</th><th>Section</th><th>Grade</th><th>Finish</th><th class="number">Length</th><th class="number">Qty</th><th class="number">Weight</th></tr></thead><tbody>${rows || `<tr><td colspan="7">No quote lines found.</td></tr>`}</tbody></table>
+      <div class="notes"><strong>Workshop notes</strong><br>${job.notes || "Created from approved quote package " + (quote?.quoteNo || "")}</div>
     </div>
-    <div class="company"><strong>${safeSettings.legalName || safeSettings.name || "JDFabs"}</strong>${address ? `<br>${address}` : ""}${safeSettings.phone ? `<br>${safeSettings.phone}` : ""}${safeSettings.email ? `<br>${safeSettings.email}` : ""}${safeSettings.website ? `<br>${safeSettings.website}` : ""}</div>
+    <div>
+      <h2>Workshop operations</h2>
+      <table class="operations"><thead><tr><th style="width:28px">OP</th><th style="width:31%">Operation</th><th style="width:32%">Checks / traceability</th><th style="width:20%">Completed by</th><th style="width:58px">Date</th></tr></thead><tbody>${operationsRows}</tbody></table>
+      <p class="note">Internal workshop production sheet. Pricing intentionally excluded.</p>
+    </div>
   </div>
-  <div class="grid">
-    <div class="box">Customer<strong>${customer?.company || job.customer || ""}</strong><br>${customer?.contact || ""}<br>${customer?.phone || ""}</div>
-    <div class="box">Job<strong>${job.jobNo || ""} · ${job.title || ""}</strong><br>Quote: ${quote?.quoteNo || "Manual job"}<br>Status: ${job.status || ""}</div>
-    <div class="box">Dates<strong>Start: ${job.start || ""}</strong><br>Deadline: ${job.deadline || ""}<br>Materials due: ${job.materialsDue || ""}</div>
-  </div>
-  <h2>Material / fabrication lines</h2>
-  <table><thead><tr><th>Line / Details</th><th>Section</th><th>Grade</th><th>Finish</th><th class="right">Length</th><th class="right">Qty</th><th class="right">Weight</th></tr></thead><tbody>${rows || `<tr><td colspan="7">No quote lines found.</td></tr>`}</tbody></table>
-  <h2>Workshop operations</h2>
-  ${operationsTable}
-  <div class="notes"><strong>Workshop notes</strong><br>${job.notes || ""}</div>
-  <p class="note">Workshop production document. Pricing is intentionally excluded; material and fabrication details are carried from the approved job package.</p>
   <script>window.onload = function () { window.focus(); window.print(); };</script>
 </body>
 </html>`;
