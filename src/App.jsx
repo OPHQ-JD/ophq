@@ -2531,9 +2531,12 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
   const activeJobs = [...plannedJobs]
     .filter((job) => job.status !== "Complete" && job.status !== "To Be Invoiced")
     .sort((a, b) => {
+      const aDeadline = new Date(a.deadline || getJobPlanningEnd(a) || scheduleStartDate).getTime();
+      const bDeadline = new Date(b.deadline || getJobPlanningEnd(b) || scheduleStartDate).getTime();
+      if (aDeadline !== bDeadline) return aDeadline - bDeadline;
       const priorityDiff = priorityRank(a.priority) - priorityRank(b.priority);
       if (priorityDiff !== 0) return priorityDiff;
-      return new Date(a.deadline || getJobPlanningEnd(a)) - new Date(b.deadline || getJobPlanningEnd(b));
+      return String(a.jobNo || a.id).localeCompare(String(b.jobNo || b.id));
     });
 
   activeJobs.forEach((job) => {
@@ -6945,9 +6948,18 @@ export default function FabricationProductionPlannerIntegrated() {
     const planned = autoPlanJobsLive(sourceJobs, staff, weekStart, holidays);
     setJobs((current) => current.map((job) => {
       const plannedJob = planned.find((item) => item.id === job.id);
-      return plannedJob ? { ...job, start: plannedJob.start, calculatedEnd: plannedJob.calculatedEnd, end: plannedJob.calculatedEnd, staffIds: plannedJob.staffIds, stageTasks: plannedJob.stageTasks, planningDiagnostics: plannedJob.planningDiagnostics || [] } : job;
+      return plannedJob ? {
+        ...job,
+        start: plannedJob.start,
+        calculatedEnd: plannedJob.calculatedEnd,
+        end: plannedJob.calculatedEnd,
+        staffIds: plannedJob.staffIds,
+        stageTasks: plannedJob.stageTasks,
+        planningDiagnostics: plannedJob.planningDiagnostics || [],
+        lastAutoPlannedAt: new Date().toISOString(),
+      } : job;
     }));
-    setAutomationStatus("Planner re-allocated live workload by staff roles, current load, priority and deadlines.");
+    setAutomationStatus("Auto-plan by deadline applied: earliest-deadline jobs were prioritised, staff gaps filled where roles allow, and manual/complete tasks preserved.");
   }
 
   function toggleStaff(jobId, staffId) {
@@ -8708,9 +8720,9 @@ export default function FabricationProductionPlannerIntegrated() {
           <div className="space-y-6">
             <div className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div><SectionHeader eyebrow="Live Planner" title="Production Calendar" description="Automatic staff allocation based on role priority, workload, job priority and deadlines." />
+                <div><SectionHeader eyebrow="Live Planner" title="Production Calendar" description="Deadline-led staff allocation. Use Auto-plan to prioritise earliest deadlines and fill staff gaps where work is ready." />
                 <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p></div>
-                {activeRole === "operations" ? <div className="flex flex-wrap gap-2"><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={runPlannerFunctionalTest}>Run function test</button></div> : null}
+                {activeRole === "operations" ? <div className="flex flex-wrap gap-2"><button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={() => applyLivePlannerSnapshot(jobs)}>Auto-plan by deadline</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={runPlannerFunctionalTest}>Run function test</button></div> : null}
               </div>
               {plannerTestReport ? (
                 <div className={`mb-4 rounded-2xl p-4 ${plannerTestReport.passed ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-900"}`}>
