@@ -1061,17 +1061,17 @@ const appRoles = {
   operations: {
     label: "Operations",
     description: "Full system access",
-    tabs: ["settings", "planner", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "settings", "planner", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
   },
   sales: {
     label: "Sales",
     description: "Quotes and customer access",
-    tabs: ["quotes", "customers"],
+    tabs: ["dashboard", "quotes", "customers"],
   },
   staff: {
     label: "Staff",
     description: "Workshop access",
-    tabs: ["planner", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "planner", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
   },
 };
 
@@ -1080,8 +1080,7 @@ function canAccessTab(role, tab) {
 }
 
 function getDefaultTabForRole(role) {
-  if (role === "sales") return "quotes";
-  return "planner";
+  return "dashboard";
 }
 
 const stageWeights = {
@@ -3371,6 +3370,214 @@ function LaunchModeBanner({ cloudSyncStatus }) {
     </div>
   );
 }
+
+function getShortDateLabel(value) {
+  if (!value) return "No date";
+  try {
+    return new Date(value).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  } catch {
+    return value;
+  }
+}
+
+function getTodayTaskRows(jobs = [], staff = [], today = toIso(new Date())) {
+  return (jobs || []).flatMap((job) => (job.stageTasks || [])
+    .filter((task) => task.status !== "Complete")
+    .filter((task) => task.start <= today && task.end >= today)
+    .map((task) => ({
+      id: `${job.id}-${task.id}`,
+      jobNo: job.jobNo,
+      title: job.title,
+      customer: job.customer,
+      stage: task.stage,
+      staffName: staff.find((person) => person.id === task.staffId)?.name || "Unassigned",
+      hours: Number(task.hours || 0),
+      status: task.status || job.status,
+    }))).slice(0, 8);
+}
+
+function getDashboardDeadlineRows(jobs = [], today = toIso(new Date())) {
+  const todayDate = new Date(today);
+  const nextWeek = addDays(todayDate, 7);
+  return (jobs || [])
+    .filter((job) => !["Complete", "Cancelled"].includes(job.status))
+    .filter((job) => job.deadline)
+    .map((job) => {
+      const deadlineDate = new Date(job.deadline);
+      const finishDate = getJobFinishDate(job);
+      const late = deadlineDate < todayDate || isJobPastDeadline(job);
+      const soon = deadlineDate <= nextWeek;
+      return { ...job, late, soon, finishDate };
+    })
+    .filter((job) => job.late || job.soon)
+    .sort((a, b) => new Date(a.deadline) - new Date(b.deadline))
+    .slice(0, 8);
+}
+
+function getStaffCapacityRows(jobs = [], staff = [], today = toIso(new Date())) {
+  return (staff || []).filter(isStaffActive).map((person) => {
+    const hours = (jobs || []).flatMap((job) => job.stageTasks || [])
+      .filter((task) => task.staffId === person.id && task.status !== "Complete" && task.start <= today && task.end >= today)
+      .reduce((sum, task) => sum + Number(task.hours || 0), 0);
+    const capacity = Number(person.hoursPerDay || 7.5);
+    return {
+      id: person.id,
+      name: person.name,
+      hours,
+      capacity,
+      gap: Math.max(0, capacity - hours),
+      over: Math.max(0, hours - capacity),
+    };
+  });
+}
+
+function getMaterialIssueRows(jobs = [], purchaseOrders = [], stockItems = []) {
+  const waitingJobs = (jobs || [])
+    .filter((job) => !["Complete", "Cancelled"].includes(job.status))
+    .filter((job) => String(job.status || "").toLowerCase().includes("material") || String(job.stockStatus || "").toLowerCase().includes("missing") || !String(job.stockStatus || "").trim())
+    .map((job) => ({ id: job.id, label: `${job.jobNo} · ${job.title}`, detail: job.stockStatus ? `Stock: ${job.stockStatus}` : "Material status unknown" }));
+  const orderRows = (purchaseOrders || [])
+    .filter((po) => !["Received", "Cancelled"].includes(po.status))
+    .slice(0, 4)
+    .map((po) => ({ id: po.id, label: `${po.poNo || po.enquiryNo || "PO"}`, detail: `${po.status} · required ${getShortDateLabel(po.requiredBy)}` }));
+  const lowStockRows = (stockItems || [])
+    .filter((item) => ["On Order", "Reserved"].includes(item.status))
+    .slice(0, 3)
+    .map((item) => ({ id: item.id, label: item.sectionSize || item.product || "Stock item", detail: item.status }));
+  return [...waitingJobs, ...orderRows, ...lowStockRows].slice(0, 8);
+}
+
+function DashboardActionButton({ label, description, onClick }) {
+  return (
+    <button onClick={onClick} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md">
+      <p className="text-sm font-black text-blue-950">{label}</p>
+      <p className="mt-1 text-xs font-semibold text-blue-600">{description}</p>
+    </button>
+  );
+}
+
+function DashboardListCard({ title, description, emptyText, children }) {
+  return (
+    <div className="rounded-3xl bg-white p-5 shadow-sm">
+      <h3 className="text-lg font-black text-blue-950">{title}</h3>
+      {description ? <p className="mt-1 text-sm text-blue-700">{description}</p> : null}
+      <div className="mt-4 space-y-2">
+        {children || <p className="rounded-2xl bg-blue-50 p-3 text-sm font-semibold text-blue-700">{emptyText}</p>}
+      </div>
+    </div>
+  );
+}
+
+function LiveOperatingDashboard({ activeRole, jobs, staff, quotes, plannerQuotePackages, purchaseOrders, stockItems, today, onNavigate }) {
+  const activeJobs = (jobs || []).filter((job) => !["Complete", "Cancelled"].includes(job.status));
+  const todayTasks = getTodayTaskRows(jobs, staff, today);
+  const deadlineRows = getDashboardDeadlineRows(jobs, today);
+  const staffCapacityRows = getStaffCapacityRows(jobs, staff, today);
+  const materialIssues = getMaterialIssueRows(jobs, purchaseOrders, stockItems);
+  const quoteApprovalRows = [
+    ...(plannerQuotePackages || []).filter((quote) => !["Converted", "Rejected", "Cancelled"].includes(quote.status || "")),
+    ...(quotes || []).filter((quote) => ["Accepted", "In Planner Review", "Ready to send"].includes(quote.status || "")),
+  ].slice(0, 8);
+  const purchasingActions = (purchaseOrders || []).filter((po) => !["Received", "Cancelled"].includes(po.status)).slice(0, 8);
+  const freeStaffCount = staffCapacityRows.filter((row) => row.gap > 0.25).length;
+  const overdueCount = deadlineRows.filter((row) => row.late).length;
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-3xl bg-white p-5 shadow-sm">
+        <SectionHeader
+          eyebrow="Live operating dashboard"
+          title="OPHQ today"
+          description="A front page for daily decisions: deadlines, workload, materials, approvals and purchasing actions."
+          actions={<button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-black text-white" onClick={() => onNavigate("planner")}>Open planner</button>}
+        />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Active jobs" value={activeJobs.length} tone="dark" />
+        <StatCard label="Due / at risk" value={deadlineRows.length} />
+        <StatCard label="Overdue" value={overdueCount} />
+        <StatCard label="Staff gaps today" value={freeStaffCount} />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <DashboardListCard title="Today's jobs" description="Live work visible from planner tasks." emptyText="No scheduled work today.">
+          {todayTasks.length ? todayTasks.map((task) => (
+            <div key={task.id} className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-black text-blue-950">{task.jobNo} · {task.stage}</p>
+                <span className="rounded-full bg-white px-2 py-1 text-xs font-black text-blue-700">{task.staffName}</span>
+              </div>
+              <p className="mt-1 text-sm font-semibold text-blue-800">{task.title}</p>
+              <p className="text-xs text-blue-600">{task.customer} · {task.hours}h</p>
+            </div>
+          )) : null}
+        </DashboardListCard>
+
+        <DashboardListCard title="Deadline risk" description="Jobs due soon or likely to finish late." emptyText="No deadline risks found.">
+          {deadlineRows.length ? deadlineRows.map((job) => (
+            <div key={job.id} className={`rounded-2xl border p-3 ${job.late ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-black text-blue-950">{job.jobNo} · {job.title}</p>
+                <span className={`rounded-full px-2 py-1 text-xs font-black ${job.late ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>{job.late ? "Risk" : "Due soon"}</span>
+              </div>
+              <p className="mt-1 text-xs font-semibold text-blue-700">Deadline {getShortDateLabel(job.deadline)} · Planner finish {getShortDateLabel(job.finishDate)}</p>
+            </div>
+          )) : null}
+        </DashboardListCard>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <DashboardListCard title="Staff availability" description="Shows spare capacity or overload today." emptyText="No staff set up.">
+          {staffCapacityRows.length ? staffCapacityRows.map((row) => (
+            <div key={row.id} className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-black text-blue-950">{row.name}</p>
+                <p className="text-xs font-black text-blue-700">{Math.round(row.hours * 10) / 10}h / {row.capacity}h</p>
+              </div>
+              <p className={`mt-1 text-xs font-bold ${row.over ? "text-red-700" : row.gap ? "text-amber-700" : "text-emerald-700"}`}>{row.over ? `${Math.round(row.over * 10) / 10}h over capacity` : row.gap ? `${Math.round(row.gap * 10) / 10}h free` : "Fully loaded"}</p>
+            </div>
+          )) : null}
+        </DashboardListCard>
+
+        <DashboardListCard title="Material issues" description="Stock unknown, waiting material and open purchasing." emptyText="No material issues found.">
+          {materialIssues.length ? materialIssues.map((issue) => (
+            <div key={issue.id} className="rounded-2xl border border-amber-100 bg-amber-50 p-3">
+              <p className="font-black text-blue-950">{issue.label}</p>
+              <p className="mt-1 text-xs font-semibold text-amber-800">{issue.detail}</p>
+            </div>
+          )) : null}
+        </DashboardListCard>
+
+        <DashboardListCard title={activeRole === "staff" ? "Quick actions" : "Approvals / purchasing"} description={activeRole === "staff" ? "Staff-focused shortcuts." : "Quotes and supplier actions needing attention."} emptyText="No actions due.">
+          {activeRole !== "staff" && quoteApprovalRows.length ? quoteApprovalRows.map((quote) => (
+            <div key={`quote-${quote.id}`} className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
+              <p className="font-black text-blue-950">{quote.quoteNo || quote.packageNo || quote.title || "Quote"}</p>
+              <p className="mt-1 text-xs font-semibold text-blue-700">{quote.customer || quote.customerName || "Customer"} · {quote.status || "Review"}</p>
+            </div>
+          )) : null}
+          {activeRole !== "staff" && purchasingActions.length ? purchasingActions.map((po) => (
+            <div key={`po-${po.id}`} className="rounded-2xl border border-blue-100 bg-white p-3">
+              <p className="font-black text-blue-950">{po.poNo || po.enquiryNo || "Purchasing"}</p>
+              <p className="mt-1 text-xs font-semibold text-blue-700">{po.status} · required {getShortDateLabel(po.requiredBy)}</p>
+            </div>
+          )) : null}
+          {activeRole === "staff" ? <p className="rounded-2xl bg-blue-50 p-3 text-sm font-semibold text-blue-700">Use Planner, Stock Inventory and Clocking from the shortcuts below.</p> : null}
+        </DashboardListCard>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {activeRole !== "staff" ? <DashboardActionButton label="Quotes" description="Create or review quotes" onClick={() => onNavigate("quotes")} /> : null}
+        <DashboardActionButton label="Planner" description="Auto-plan and check capacity" onClick={() => onNavigate("planner")} />
+        <DashboardActionButton label="Stock" description="Search stock and allocations" onClick={() => onNavigate("stock")} />
+        {activeRole !== "staff" ? <DashboardActionButton label="Purchasing" description="Enquiries and POs" onClick={() => onNavigate("pos")} /> : null}
+        {activeRole !== "staff" ? <DashboardActionButton label="CRM" description="Customers and suppliers" onClick={() => onNavigate("customers")} /> : null}
+        {activeRole === "staff" ? <DashboardActionButton label="Clocking" description="Clock in and out" onClick={() => onNavigate("clocking")} /> : null}
+      </div>
+    </div>
+  );
+}
+
 
 function JobStatusLine({ job }) {
   const currentIndex = Math.max(0, stages.indexOf(job.stage));
@@ -6739,7 +6946,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [weekStart, setWeekStart] = useState(today);
   const [search, setSearch] = useState("");
   const [activeRole, setActiveRole] = useState("operations");
-  const [activeTab, setActiveTab] = useState("planner");
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [securedTab, setSecuredTab] = useState(null);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
@@ -8255,8 +8462,8 @@ export default function FabricationProductionPlannerIntegrated() {
   }
 
   const tabNavigationOrder = activeRole === "operations"
-    ? [["planner", "Planner"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
-    : [["settings", "Settings"], ["planner", "Planner"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
+    ? [["dashboard", "Dashboard"], ["planner", "Planner"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
+    : [["dashboard", "Dashboard"], ["settings", "Settings"], ["planner", "Planner"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
   const visibleMainTabs = tabNavigationOrder.filter(([key]) => canAccessTab(activeRole, key));
   const visibleStaffTabs = [["clocking", "Clocking In"], ["holiday", "Holiday"]].filter(([key]) => canAccessTab(activeRole, key));
   const pendingHolidayRequests = hasPendingHolidayRequests(holidays);
@@ -8492,7 +8699,7 @@ export default function FabricationProductionPlannerIntegrated() {
           </div>
         </div>
 
-        {activeTab !== "clocking" && activeTab !== "holiday" && activeTab !== "stock" && activeTab !== "productivity" && activeTab !== "settings" && !(activeRole === "sales" && activeTab === "customers") ? (
+        {activeTab !== "dashboard" && activeTab !== "clocking" && activeTab !== "holiday" && activeTab !== "stock" && activeTab !== "productivity" && activeTab !== "settings" && !(activeRole === "sales" && activeTab === "customers") ? (
           <div className={dashboardClass}>
             <StatCard label="Active jobs" value={stats.activeJobs} tone="dark" />
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Planned hours" value={stats.plannedHours} /> : null}
@@ -8541,6 +8748,20 @@ export default function FabricationProductionPlannerIntegrated() {
               </div>
             </div>
           </div>
+        ) : null}
+
+        {activeTab === "dashboard" && !securedTab ? (
+          <LiveOperatingDashboard
+            activeRole={activeRole}
+            jobs={jobs}
+            staff={staff}
+            quotes={quotes}
+            plannerQuotePackages={plannerQuotePackages}
+            purchaseOrders={purchaseOrders}
+            stockItems={stockItems}
+            today={today}
+            onNavigate={(tab) => requestProtectedTab(tab)}
+          />
         ) : null}
 
         {activeTab === "clocking" ? (
