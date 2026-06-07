@@ -2453,6 +2453,134 @@ function addWorkingDaysSkippingHolidays(startDate, workingDaysNeeded, staffIds =
   return addPlannerDaysSkippingHolidays(startDate, workingDaysNeeded, staffIds, holidays);
 }
 
+
+function plannerDateKey(date) {
+  return toIso(nextPlannerWorkingDay(new Date(date)));
+}
+
+function getStaffDailyCapacity(person = {}) {
+  const hours = Number(person.hoursPerDay || person.standardHoursPerDay || 8);
+  return hours > 0 ? hours : 8;
+}
+
+function getPlannerUsageKey(staffId, day) {
+  return `${staffId}__${day}`;
+}
+
+function getStaffUsedHours(usageMap, staffId, day) {
+  return Number(usageMap.get(getPlannerUsageKey(staffId, day)) || 0);
+}
+
+function addStaffUsedHours(usageMap, staffId, day, hours) {
+  const key = getPlannerUsageKey(staffId, day);
+  usageMap.set(key, getStaffUsedHours(usageMap, staffId, day) + Number(hours || 0));
+}
+
+function getStaffAvailableHoursOnDay(person = {}, day, usageMap, holidays = []) {
+  if (!person?.id || isStaffOnApprovedHoliday(person.id, day, holidays)) return 0;
+  return Math.max(0, getStaffDailyCapacity(person) - getStaffUsedHours(usageMap, person.id, day));
+}
+
+function findFirstPlannerCapacityDate(staffIds = [], staff = [], minStartDate, usageMap, holidays = []) {
+  let cursor = nextPlannerWorkingDay(new Date(minStartDate));
+  let guard = 0;
+  while (guard < 370) {
+    const day = toIso(cursor);
+    const capacity = staffIds.reduce((sum, staffId) => {
+      const person = staff.find((item) => item.id === staffId);
+      return sum + getStaffAvailableHoursOnDay(person, day, usageMap, holidays);
+    }, 0);
+    if (capacity > 0) return cursor;
+    cursor = nextPlannerWorkingDay(addDays(cursor, 1));
+    guard += 1;
+  }
+  return nextPlannerWorkingDay(new Date(minStartDate));
+}
+
+function estimateTaskFinishForStaffIds({ task, staffIds = [], staff = [], minStartDate, usageMap, holidays = [] }) {
+  const clonedUsage = new Map(usageMap || []);
+  const result = reservePlannerCapacityForTask({ task, staffIds, staff, minStartDate, usageMap: clonedUsage, holidays, dryRun: true });
+  return result.endDate || plannerDateKey(minStartDate);
+}
+
+function pickStaffForTaskByCapacity({ job, task, allStaff = [], scheduleStartDate, minStartDate, usageMap, holidays = [] }) {
+  const eligibleStaff = getEligibleStaffForJob(job, allStaff);
+  const qualified = getQualifiedStaffForStage(task.stage, eligibleStaff);
+  const manualStaffIds = task.allocationMode === "manual" ? getTaskStaffIds(task).filter((staffId) => qualified.some((person) => person.id === staffId)) : [];
+  if (manualStaffIds.length) {
+    return {
+      staffIds: manualStaffIds,
+      reason: `Manual override: ${manualStaffIds.map((id) => allStaff.find((person) => person.id === id)?.name || id).join(", ")}.`,
+      allocationMode: "manual",
+    };
+  }
+  if (!qualified.length) return { staffIds: [], reason: `No eligible staff with ${task.stage} role.`, allocationMode: "auto" };
+
+  const sorted = [...qualified].sort((a, b) => {
+    const aFinish = new Date(estimateTaskFinishForStaffIds({ task, staffIds: [a.id], staff: allStaff, minStartDate: minStartDate || scheduleStartDate, usageMap, holidays })).getTime();
+    const bFinish = new Date(estimateTaskFinishForStaffIds({ task, staffIds: [b.id], staff: allStaff, minStartDate: minStartDate || scheduleStartDate, usageMap, holidays })).getTime();
+    if (aFinish !== bFinish) return aFinish - bFinish;
+    const aStart = findFirstPlannerCapacityDate([a.id], allStaff, minStartDate || scheduleStartDate, usageMap, holidays).getTime();
+    const bStart = findFirstPlannerCapacityDate([b.id], allStaff, minStartDate || scheduleStartDate, usageMap, holidays).getTime();
+    if (aStart !== bStart) return aStart - bStart;
+    const priorityDiff = getStaffRolePriority(a, task.stage) - getStaffRolePriority(b, task.stage);
+    if (priorityDiff !== 0) return priorityDiff;
+    return getStaffDailyCapacity(b) - getStaffDailyCapacity(a);
+  });
+
+  const chosen = sorted[0];
+  return {
+    staffIds: [chosen.id],
+    reason: `Auto allocated to ${chosen.name}: earliest capacity, ${task.stage} priority P${getStaffRolePriority(chosen, task.stage)}.`,
+    allocationMode: "auto",
+  };
+}
+
+function reservePlannerCapacityForTask({ task, staffIds = [], staff = [], minStartDate, usageMap, holidays = [], dryRun = false }) {
+  const requiredHours = Math.max(0, Number(task.hours || 0));
+  if (!staffIds.length || requiredHours <= 0) return { startDate: "", endDate: "", hoursPlanned: 0 };
+
+  let remaining = requiredHours;
+  let cursor = nextPlannerWorkingDay(new Date(minStartDate));
+  let startDate = "";
+  let endDate = "";
+  let guard = 0;
+
+  while (remaining > 0.001 && guard < 730) {
+    const day = toIso(cursor);
+    const staffWithCapacity = staffIds
+      .map((staffId) => ({ staffId, person: staff.find((item) => item.id === staffId) }))
+      .filter((item) => item.person)
+      .map((item) => ({ ...item, available: getStaffAvailableHoursOnDay(item.person, day, usageMap, holidays) }))
+      .filter((item) => item.available > 0);
+
+    const totalAvailable = staffWithCapacity.reduce((sum, item) => sum + item.available, 0);
+    if (totalAvailable <= 0) {
+      cursor = nextPlannerWorkingDay(addDays(cursor, 1));
+      guard += 1;
+      continue;
+    }
+
+    if (!startDate) startDate = day;
+    endDate = day;
+    let dayRemaining = Math.min(remaining, totalAvailable);
+
+    staffWithCapacity.forEach((item, index) => {
+      if (dayRemaining <= 0) return;
+      const use = Math.min(item.available, dayRemaining);
+      if (!dryRun) addStaffUsedHours(usageMap, item.staffId, day, use);
+      else addStaffUsedHours(usageMap, item.staffId, day, use);
+      dayRemaining -= use;
+    });
+
+    remaining -= Math.min(remaining, totalAvailable);
+    if (remaining > 0.001) cursor = nextPlannerWorkingDay(addDays(cursor, 1));
+    guard += 1;
+  }
+
+  return { startDate, endDate, hoursPlanned: requiredHours - Math.max(0, remaining) };
+}
+
 function createPlanningDiagnosticsEntry({ job, task, staffId, reason }) {
   return {
     id: `diag-${job.id}-${task.id}`,
@@ -2520,7 +2648,7 @@ function autoAssignStageTasksForStaff(job, allStaff, selectedStaffIds = [], exis
 }
 
 function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new Date()), holidays = [], existingAvailabilityMap = null) {
-  const staffAvailability = existingAvailabilityMap || new Map((staff || []).map((person) => [person.id, nextPlannerWorkingDay(new Date(scheduleStartDate))]));
+  const plannerUsage = new Map();
   const diagnostics = [];
   const plannedJobs = jobs.map((job) => ({
     ...job,
@@ -2529,13 +2657,16 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
   }));
 
   const activeJobs = [...plannedJobs]
-    .filter((job) => job.status !== "Complete" && job.status !== "To Be Invoiced")
+    .filter((job) => job.status !== "Complete" && job.status !== "To Be Invoiced" && job.status !== "Cancelled")
     .sort((a, b) => {
       const aDeadline = new Date(a.deadline || getJobPlanningEnd(a) || scheduleStartDate).getTime();
       const bDeadline = new Date(b.deadline || getJobPlanningEnd(b) || scheduleStartDate).getTime();
       if (aDeadline !== bDeadline) return aDeadline - bDeadline;
       const priorityDiff = priorityRank(a.priority) - priorityRank(b.priority);
       if (priorityDiff !== 0) return priorityDiff;
+      const aHours = Number(a.remainingHours || a.estimatedHours || 0);
+      const bHours = Number(b.remainingHours || b.estimatedHours || 0);
+      if (aHours !== bHours) return aHours - bHours;
       return String(a.jobNo || a.id).localeCompare(String(b.jobNo || b.id));
     });
 
@@ -2554,7 +2685,11 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
         return;
       }
 
-      const picked = pickStaffForTask({ job, task, allStaff: staff, availabilityMap: staffAvailability, scheduleStartDate, holidays });
+      const deliveryDate = task.stage === "Delivery" && (task.fixedDate || job.deliveryDate || job.deadline)
+        ? nextPlannerWorkingDay(new Date(task.fixedDate || job.deliveryDate || job.deadline))
+        : null;
+      const minStartDate = deliveryDate || jobCursor;
+      const picked = pickStaffForTaskByCapacity({ job, task, allStaff: staff, scheduleStartDate, minStartDate, usageMap: plannerUsage, holidays });
       if (!picked.staffIds.length) {
         const unscheduled = { ...task, staffIds: [], staffId: "", start: "", end: "", allocationMode: picked.allocationMode, planningIssue: picked.reason };
         scheduledTasks.push(unscheduled);
@@ -2562,33 +2697,24 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
         return;
       }
 
-      const assignedStaffMembers = picked.staffIds.map((id) => staff.find((person) => person.id === id)).filter(Boolean);
-      const staffReadyDates = picked.staffIds.map((id) => getStaffAvailableDate(id, staffAvailability, scheduleStartDate, holidays));
-      const latestStaffReady = new Date(Math.max(...staffReadyDates.map((date) => date.getTime())));
-      const deliveryDate = task.stage === "Delivery" && (task.fixedDate || job.deliveryDate || job.deadline) ? nextPlannerWorkingDay(new Date(task.fixedDate || job.deliveryDate || job.deadline)) : null;
-      let taskStart = deliveryDate || nextPlannerWorkingDay(new Date(Math.max(jobCursor.getTime(), latestStaffReady.getTime())));
-      while (picked.staffIds.some((staffId) => isStaffOnApprovedHoliday(staffId, toIso(taskStart), holidays))) taskStart = nextPlannerWorkingDay(addDays(taskStart, 1));
-
-      const totalCapacityPerDay = assignedStaffMembers.reduce((sum, person) => sum + Number(person.hoursPerDay || 8), 0) || 8;
-      const workingDaysNeeded = Math.max(1, Math.ceil(Number(task.hours || 0) / totalCapacityPerDay));
-      const taskEnd = addWorkingDaysSkippingHolidays(taskStart, workingDaysNeeded, picked.staffIds, holidays);
-      const nextAvailable = nextPlannerWorkingDay(addDays(taskEnd, 1));
-      picked.staffIds.forEach((staffId) => staffAvailability.set(staffId, nextAvailable));
-
+      const reservation = reservePlannerCapacityForTask({ task, staffIds: picked.staffIds, staff, minStartDate, usageMap: plannerUsage, holidays });
       const scheduledTask = {
         ...task,
         staffIds: picked.staffIds,
         staffId: picked.staffIds[0] || "",
-        start: toIso(taskStart),
-        end: toIso(taskEnd),
+        start: reservation.startDate,
+        end: reservation.endDate,
         allocationMode: picked.allocationMode,
         planningReason: task.stage === "Delivery" && (task.fixedDate || job.deliveryDate || job.deadline)
           ? `${picked.reason} Delivery fixed from job delivery/deadline date ${task.fixedDate || job.deliveryDate || job.deadline}.`
-          : picked.reason,
+          : `${picked.reason} Planned ${Number(task.hours || 0)}h using available daily capacity.`,
       };
       scheduledTasks.push(scheduledTask);
-      diagnostics.push(createPlanningDiagnosticsEntry({ job, task: scheduledTask, staffId: picked.staffIds[0] || "", reason: picked.reason }));
-      jobCursor = nextPlannerWorkingDay(addDays(taskEnd, 1));
+      diagnostics.push(createPlanningDiagnosticsEntry({ job, task: scheduledTask, staffId: picked.staffIds[0] || "", reason: scheduledTask.planningReason }));
+
+      // Keep following stages as early as possible. If the staff member still has capacity on
+      // the same day, the next stage can also be planned that day instead of being forced to tomorrow.
+      jobCursor = reservation.endDate ? nextPlannerWorkingDay(new Date(reservation.endDate)) : jobCursor;
     });
 
     const jobIndex = plannedJobs.findIndex((item) => item.id === job.id);
