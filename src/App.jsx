@@ -375,13 +375,57 @@ function getEmptyAppStateSnapshot() {
   };
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function sanitiseAppStateSnapshot(snapshot = {}) {
+  const base = getEmptyAppStateSnapshot();
+  const next = { ...base };
+  Object.keys(base).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(snapshot, key)) next[key] = snapshot[key];
+  });
+  ["customers", "staff", "suppliers", "quotes", "plannerQuotePackages", "jobs", "purchaseOrders", "deliveryNotes", "stockItems", "importLogs", "clockEntries", "holidays", "sickDays", "stageTimeEntries", "pricingSchedule", "productivityRules", "customProducts", "storedDocuments", "profiles", "auditLog", "recordLocks"].forEach((key) => {
+    next[key] = safeArray(next[key]);
+  });
+  next.companySettings = { ...initialCompanySettings, ...(next.companySettings && typeof next.companySettings === "object" ? next.companySettings : {}) };
+  next.pricingSaveMeta = snapshot.pricingSaveMeta || { savedAt: snapshot.savedAt || "", savedBy: "Operations", savedByRole: "operations" };
+  next.jobs = safeArray(next.jobs).map((job, index) => ({
+    ...job,
+    id: job?.id || `job-import-${index}`,
+    jobNo: job?.jobNo || `JD-${String(index + 1).padStart(3, "0")}`,
+    title: job?.title || "Imported job",
+    customer: job?.customer || "",
+    status: job?.status || "In Production",
+    stage: job?.stage || "Cutting",
+    priority: job?.priority || "3",
+    estimatedHours: Number(job?.estimatedHours || 0),
+    staffIds: safeArray(job?.staffIds),
+    excludedStaffIds: safeArray(job?.excludedStaffIds),
+    productionStageBreakdown: safeArray(job?.productionStageBreakdown),
+    stageTasks: safeArray(job?.stageTasks),
+  }));
+  next.staff = safeArray(next.staff).map((person, index) => ({
+    ...person,
+    id: person?.id || `staff-import-${index}`,
+    name: person?.name || `Staff ${index + 1}`,
+    status: person?.status || "Active",
+    roles: safeArray(person?.roles),
+    rolePriorities: person?.rolePriorities && typeof person.rolePriorities === "object" ? person.rolePriorities : {},
+    hoursPerDay: Number(person?.hoursPerDay || 7.5),
+  }));
+  next.purchaseOrders = safeArray(next.purchaseOrders);
+  next.stockItems = safeArray(next.stockItems);
+  return next;
+}
+
 function loadSavedAppState() {
-  if (typeof window === "undefined") return {};
+  if (typeof window === "undefined") return getEmptyAppStateSnapshot();
   try {
     const raw = window.localStorage.getItem(APP_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    return raw ? sanitiseAppStateSnapshot(JSON.parse(raw)) : getEmptyAppStateSnapshot();
   } catch (error) {
-    return {};
+    return getEmptyAppStateSnapshot();
   }
 }
 
@@ -434,11 +478,7 @@ function downloadAppStateBackup(snapshot = {}, filePrefix = "jdfabs-ophq-backup"
 
 function restoreAppStateBackup(snapshot = {}) {
   if (typeof window === "undefined") return false;
-  const allowedSnapshot = getEmptyAppStateSnapshot();
-  const restored = Object.keys(allowedSnapshot).reduce((next, key) => {
-    if (Object.prototype.hasOwnProperty.call(snapshot, key)) next[key] = snapshot[key];
-    return next;
-  }, {});
+  const restored = sanitiseAppStateSnapshot(snapshot);
   restored.restoredAt = new Date().toISOString();
   saveAppState(restored);
   return true;
@@ -588,7 +628,7 @@ function getRemainingLengthForStockItem(item = {}) {
 
 function getStockAvailableLengthByStatus(stockItems = [], part = {}, status = "In Stock", jobId = "") {
   const statusList = Array.isArray(status) ? status : [status];
-  return (stockItems || [])
+  return safeArray(stockItems)
     .filter((item) => stockMatchesPart(item, part) && statusList.includes(item.status))
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
@@ -602,7 +642,7 @@ function getRequiredLengthForPart(part = {}) {
 
 function findBestStockSegmentForLength(stockItems = [], part = {}, requiredLengthM = 0, preferredStatus = "In Stock", jobId = "") {
   const preferredStatuses = Array.isArray(preferredStatus) ? preferredStatus : [preferredStatus];
-  const candidates = (stockItems || [])
+  const candidates = safeArray(stockItems)
     .filter((item) => stockMatchesPart(item, part) && preferredStatuses.includes(item.status))
     .flatMap((item) => getStockSegments(item).map((segment) => ({ item, segment })))
     .filter(({ segment }) => segment.status !== "Consumed")
@@ -2824,7 +2864,7 @@ function runPlannerFunctionalTestSuite({ jobs = [], staff = [], pricingSchedule 
     return missingParts.length ? [createSuggestedPurchaseOrderDraft({ job, missingParts, supplierId: suppliers[0]?.id || "", poCount: purchaseOrders.length + index, today })] : [];
   });
 
-  const sarahTasks = plannedStressJobs.flatMap((job) => (job.stageTasks || [])
+  const sarahTasks = plannedStressJobs.flatMap((job) => safeArray(job.stageTasks)
     .filter((task) => getTaskStaffIds(task).includes("s3") && task.start)
     .flatMap((task) => getCalendarStageTasksForStaff({ jobs: [job], staffId: "s3", day: task.start, holidays }).map((calendarTask) => ({ ...calendarTask, job }))));
   const leeCoverageJob = {
@@ -3381,7 +3421,7 @@ function getShortDateLabel(value) {
 }
 
 function getTodayTaskRows(jobs = [], staff = [], today = toIso(new Date())) {
-  return (jobs || []).flatMap((job) => (job.stageTasks || [])
+  return (jobs || []).flatMap((job) => safeArray(job.stageTasks)
     .filter((task) => task.status !== "Complete")
     .filter((task) => task.start <= today && task.end >= today)
     .map((task) => ({
@@ -3399,7 +3439,7 @@ function getTodayTaskRows(jobs = [], staff = [], today = toIso(new Date())) {
 function getDashboardDeadlineRows(jobs = [], today = toIso(new Date())) {
   const todayDate = new Date(today);
   const nextWeek = addDays(todayDate, 7);
-  return (jobs || [])
+  return safeArray(jobs)
     .filter((job) => !["Complete", "Cancelled"].includes(job.status))
     .filter((job) => job.deadline)
     .map((job) => {
@@ -3415,8 +3455,8 @@ function getDashboardDeadlineRows(jobs = [], today = toIso(new Date())) {
 }
 
 function getStaffCapacityRows(jobs = [], staff = [], today = toIso(new Date())) {
-  return (staff || []).filter(isStaffActive).map((person) => {
-    const hours = (jobs || []).flatMap((job) => job.stageTasks || [])
+  return safeArray(staff).filter(isStaffActive).map((person) => {
+    const hours = safeArray(jobs).flatMap((job) => safeArray(job.stageTasks))
       .filter((task) => task.staffId === person.id && task.status !== "Complete" && task.start <= today && task.end >= today)
       .reduce((sum, task) => sum + Number(task.hours || 0), 0);
     const capacity = Number(person.hoursPerDay || 7.5);
@@ -3432,19 +3472,40 @@ function getStaffCapacityRows(jobs = [], staff = [], today = toIso(new Date())) 
 }
 
 function getMaterialIssueRows(jobs = [], purchaseOrders = [], stockItems = []) {
-  const waitingJobs = (jobs || [])
+  const waitingJobs = safeArray(jobs)
     .filter((job) => !["Complete", "Cancelled"].includes(job.status))
     .filter((job) => String(job.status || "").toLowerCase().includes("material") || String(job.stockStatus || "").toLowerCase().includes("missing") || !String(job.stockStatus || "").trim())
     .map((job) => ({ id: job.id, label: `${job.jobNo} · ${job.title}`, detail: job.stockStatus ? `Stock: ${job.stockStatus}` : "Material status unknown" }));
-  const orderRows = (purchaseOrders || [])
+  const orderRows = safeArray(purchaseOrders)
     .filter((po) => !["Received", "Cancelled"].includes(po.status))
     .slice(0, 4)
     .map((po) => ({ id: po.id, label: `${po.poNo || po.enquiryNo || "PO"}`, detail: `${po.status} · required ${getShortDateLabel(po.requiredBy)}` }));
-  const lowStockRows = (stockItems || [])
+  const lowStockRows = safeArray(stockItems)
     .filter((item) => ["On Order", "Reserved"].includes(item.status))
     .slice(0, 3)
     .map((item) => ({ id: item.id, label: item.sectionSize || item.product || "Stock item", detail: item.status }));
   return [...waitingJobs, ...orderRows, ...lowStockRows].slice(0, 8);
+}
+
+class DashboardErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-3xl border border-red-200 bg-red-50 p-6 text-red-800 shadow-sm">
+          <h2 className="text-xl font-black">Dashboard could not load</h2>
+          <p className="mt-2 text-sm font-semibold">Your backup data is still saved. Open Planner, Jobs, Quotes or Stock from the navigation, then export a backup before making further changes.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function DashboardActionButton({ label, description, onClick }) {
@@ -3469,16 +3530,16 @@ function DashboardListCard({ title, description, emptyText, children }) {
 }
 
 function LiveOperatingDashboard({ activeRole, jobs, staff, quotes, plannerQuotePackages, purchaseOrders, stockItems, today, onNavigate }) {
-  const activeJobs = (jobs || []).filter((job) => !["Complete", "Cancelled"].includes(job.status));
+  const activeJobs = safeArray(jobs).filter((job) => !["Complete", "Cancelled"].includes(job.status));
   const todayTasks = getTodayTaskRows(jobs, staff, today);
   const deadlineRows = getDashboardDeadlineRows(jobs, today);
   const staffCapacityRows = getStaffCapacityRows(jobs, staff, today);
   const materialIssues = getMaterialIssueRows(jobs, purchaseOrders, stockItems);
   const quoteApprovalRows = [
-    ...(plannerQuotePackages || []).filter((quote) => !["Converted", "Rejected", "Cancelled"].includes(quote.status || "")),
-    ...(quotes || []).filter((quote) => ["Accepted", "In Planner Review", "Ready to send"].includes(quote.status || "")),
+    ...safeArray(plannerQuotePackages).filter((quote) => !["Converted", "Rejected", "Cancelled"].includes(quote.status || "")),
+    ...safeArray(quotes).filter((quote) => ["Accepted", "In Planner Review", "Ready to send"].includes(quote.status || "")),
   ].slice(0, 8);
-  const purchasingActions = (purchaseOrders || []).filter((po) => !["Received", "Cancelled"].includes(po.status)).slice(0, 8);
+  const purchasingActions = safeArray(purchaseOrders).filter((po) => !["Received", "Cancelled"].includes(po.status)).slice(0, 8);
   const freeStaffCount = staffCapacityRows.filter((row) => row.gap > 0.25).length;
   const overdueCount = deadlineRows.filter((row) => row.late).length;
 
@@ -7022,7 +7083,7 @@ export default function FabricationProductionPlannerIntegrated() {
     let clashes = 0;
 
     staff.forEach((person) => {
-      const personJobs = scheduledJobs.filter((job) => job.staffIds.includes(person.id));
+      const personJobs = scheduledJobs.filter((job) => safeArray(job.staffIds).includes(person.id));
       for (let i = 0; i < personJobs.length; i += 1) {
         for (let j = i + 1; j < personJobs.length; j += 1) {
           if (rangesOverlap(personJobs[i].start, personJobs[i].end, personJobs[j].start, personJobs[j].end)) clashes += 1;
@@ -7443,7 +7504,7 @@ export default function FabricationProductionPlannerIntegrated() {
       });
 
       setJobs((currentJobs) => currentJobs.map((job) => {
-        if (!job.staffIds.includes(staffId)) return job;
+        if (!safeArray(job.staffIds).includes(staffId)) return job;
         return {
           ...job,
           updatedAt: Date.now(),
@@ -8456,7 +8517,7 @@ export default function FabricationProductionPlannerIntegrated() {
 
   function workloadForStaff(staffId) {
     return scheduledJobs
-      .filter((job) => job.staffIds.includes(staffId))
+      .filter((job) => safeArray(job.staffIds).includes(staffId))
       .filter((job) => rangesOverlap(job.start, job.end, weekDays[0], weekDays[weekDays.length - 1]))
       .reduce((sum, job) => sum + Number(job.estimatedHours || 0) / Math.max(1, job.staffIds.length), 0);
   }
@@ -8751,17 +8812,19 @@ export default function FabricationProductionPlannerIntegrated() {
         ) : null}
 
         {activeTab === "dashboard" && !securedTab ? (
-          <LiveOperatingDashboard
-            activeRole={activeRole}
-            jobs={jobs}
-            staff={staff}
-            quotes={quotes}
-            plannerQuotePackages={plannerQuotePackages}
-            purchaseOrders={purchaseOrders}
-            stockItems={stockItems}
-            today={today}
-            onNavigate={(tab) => requestProtectedTab(tab)}
-          />
+          <DashboardErrorBoundary>
+            <LiveOperatingDashboard
+              activeRole={activeRole}
+              jobs={jobs}
+              staff={staff}
+              quotes={quotes}
+              plannerQuotePackages={plannerQuotePackages}
+              purchaseOrders={purchaseOrders}
+              stockItems={stockItems}
+              today={today}
+              onNavigate={(tab) => requestProtectedTab(tab)}
+            />
+          </DashboardErrorBoundary>
         ) : null}
 
         {activeTab === "clocking" ? (
@@ -9488,7 +9551,7 @@ export default function FabricationProductionPlannerIntegrated() {
                           {staff.map((person) => {
                             const excluded = (selectedJob.excludedStaffIds || []).includes(person.id);
                             const assigned = !excluded;
-                            const activelyAllocated = selectedJob.staffIds.includes(person.id);
+                            const activelyAllocated = safeArray(selectedJob.staffIds).includes(person.id);
                             const workload = Math.round(workloadForStaff(person.id));
                             return (
                               <button key={person.id} onClick={() => toggleStaff(selectedJob.id, person.id)} className={`rounded-2xl border p-3 text-left ${assigned ? "border-blue-600 bg-blue-700 text-white" : "bg-white"}`}>
