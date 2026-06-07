@@ -1681,6 +1681,19 @@ function estimateQuoteLineProductionBreakdown(line, productivityRules = defaultP
   return stageMinutes;
 }
 
+function mergeProductionStageBreakdownsFromRows(rows = []) {
+  const totals = new Map();
+  (rows || []).forEach((row) => {
+    const stage = row.stage;
+    if (!stage) return;
+    const minutes = Number(row.minutes || 0) || Number(row.hours || 0) * 60;
+    totals.set(stage, (totals.get(stage) || 0) + minutes);
+  });
+  return Array.from(totals.entries())
+    .filter(([, minutes]) => minutes > 0)
+    .map(([stage, minutes]) => ({ stage, minutes, hours: minutes / 60 }));
+}
+
 function mergeProductionStageBreakdowns(lines = [], productivityRules = defaultProductivityRules, productDatabase = steelProductDatabase) {
   const stageMinutes = (lines || []).reduce((totals, line) => {
     const lineBreakdown = estimateQuoteLineProductionBreakdown(line, productivityRules, productDatabase);
@@ -1935,6 +1948,8 @@ function buildQuotePackage({ quote, customer, leadTime = null }) {
       priority: quote.priority || "3",
       requestedDeliveryDate: quote.requestedDeliveryDate || "",
       jobDeliveryAddress: quote.jobDeliveryAddress || quote.deliveryAddress || "",
+      deliveryCost: quote.deliveryCost || "",
+      deliveryTimeHours: quote.deliveryTimeHours || "",
       estimatedProductionHours: Number(quote.estimatedProductionHours || 0),
       productionStageBreakdown: quote.productionStageBreakdown || [],
       leadTime: leadTime || quote.leadTime || null,
@@ -1960,6 +1975,7 @@ function createJobFromQuotePackage({ quotePackage, jobCount, today }) {
   const reservedNumber = reserveDocumentNumberSync({ documentType: "job", records: [], linkedSourceNumber: quotePackage.quoteNo });
   const sequence = quotePackage.quoteSequence || reservedNumber.sequence || getSequenceFromDocumentNumber(quotePackage.quoteNo) || jobCount + 1;
   const productionStageBreakdown = quotePackage.productionStageBreakdown || quotePackage.quoteMeta?.productionStageBreakdown || [];
+  const deliveryTimeHours = Number(quotePackage.quoteMeta?.deliveryTimeHours || 0);
   const job = {
     id: createEntityId("job"),
     jobSequence: sequence,
@@ -1978,6 +1994,9 @@ function createJobFromQuotePackage({ quotePackage, jobCount, today }) {
     stage: "Design",
     status: "Waiting Material",
     priority: quotePackage.quoteMeta?.priority || "3",
+    deliveryCost: Number(quotePackage.quoteMeta?.deliveryCost || 0),
+    deliveryTimeHours,
+    deliveryDate: quotePackage.quoteMeta?.requestedDeliveryDate || "",
     estimatedHours,
     staffIds: [],
     notes: `Created from approved quote package ${quotePackage.quoteNo}`,
@@ -2256,9 +2275,17 @@ function getStageHours(totalHours, stage) {
   return Math.round((Number(totalHours || 0) * (stageWeights[stage] || 0)) / 100);
 }
 
+function getRequiredPlannerStages(productionStageBreakdown = [], stageTasks = []) {
+  const breakdownStages = new Set((productionStageBreakdown || []).filter((item) => Number(item.hours || item.minutes || 0) > 0).map((item) => item.stage));
+  if (breakdownStages.size) return stages.filter((stage) => stage !== "Complete" && breakdownStages.has(stage));
+  const existingStages = new Set((stageTasks || []).filter((task) => !task.disabled && Number(task.hours || 0) > 0).map((task) => task.stage));
+  if (existingStages.size) return stages.filter((stage) => stage !== "Complete" && existingStages.has(stage));
+  return stages.filter((stage) => stage !== "Complete");
+}
+
 function createDefaultStageTasks(start, end, estimatedHours = 0, productionStageBreakdown = []) {
   const breakdownByStage = new Map((productionStageBreakdown || []).map((item) => [item.stage, Number(item.hours || 0)]));
-  return stages.filter((stage) => stage !== "Complete").map((stage, index) => ({
+  return getRequiredPlannerStages(productionStageBreakdown, []).map((stage, index) => ({
     id: `stage-task-${Date.now()}-${index}`,
     stage,
     staffIds: [],
@@ -2275,7 +2302,7 @@ function ensureAllStageTasks(stageTasks = [], start, end, estimatedHours = 0, pr
   const breakdownByStage = new Map((productionStageBreakdown || []).map((item) => [item.stage, Number(item.hours || 0)]));
   const deliveryDate = end || start;
 
-  return stages.filter((stage) => stage !== "Complete").map((stage, index) => {
+  return getRequiredPlannerStages(productionStageBreakdown, stageTasks).map((stage, index) => {
     const existing = existingByStage.get(stage);
     const breakdownHours = breakdownByStage.has(stage) ? breakdownByStage.get(stage) : null;
     const isDelivery = stage === "Delivery";
@@ -2390,6 +2417,32 @@ function getEligibleStaffForJob(job = {}, allStaff = []) {
 
 function getQualifiedStaffForStage(stage, allStaff = []) {
   return (allStaff || []).filter((person) => isStaffActive(person) && (person.roles || []).includes(stage));
+}
+
+function getQualifiedPlannerStaffForTask(job = {}, task = {}, allStaff = []) {
+  const eligibleStaff = getEligibleStaffForJob(job, allStaff);
+  const assignedQualified = getQualifiedStaffForStage(task.stage, eligibleStaff);
+  if (assignedQualified.length) {
+    return { staff: assignedQualified, expanded: false, reason: "Assigned/eligible staff cover this stage." };
+  }
+
+  const manuallyAssigned = new Set([...(job.staffIds || []), ...getTaskStaffIds(task)]);
+  const hasManualScope = manuallyAssigned.size > 0 || (job.excludedStaffIds || []).length > 0;
+  const fallbackQualified = getQualifiedStaffForStage(task.stage, allStaff);
+  if (hasManualScope && fallbackQualified.length) {
+    return {
+      staff: fallbackQualified,
+      expanded: true,
+      reason: `No selected/eligible staff had the ${task.stage} role, so Auto-plan expanded to any qualified active staff.`,
+    };
+  }
+
+  return { staff: assignedQualified, expanded: false, reason: `No eligible staff with ${task.stage} role.` };
+}
+
+function getAutoPlanStartDateForJob(job = {}, scheduleStartDate = toIso(new Date())) {
+  if (job.plannerStartLocked || job.manualStartLocked) return job.start || scheduleStartDate;
+  return scheduleStartDate || job.start || toIso(new Date());
 }
 
 function getTaskLoadByStaff(jobs = [], activeOnly = false) {
@@ -2511,9 +2564,9 @@ function estimateTaskFinishForStaffIds({ task, staffIds = [], staff = [], minSta
 }
 
 function pickStaffForTaskByCapacity({ job, task, allStaff = [], scheduleStartDate, minStartDate, usageMap, holidays = [] }) {
-  const eligibleStaff = getEligibleStaffForJob(job, allStaff);
-  const qualified = getQualifiedStaffForStage(task.stage, eligibleStaff);
-  const manualStaffIds = task.allocationMode === "manual" ? getTaskStaffIds(task).filter((staffId) => qualified.some((person) => person.id === staffId)) : [];
+  const plannerQualified = getQualifiedPlannerStaffForTask(job, task, allStaff);
+  const qualified = plannerQualified.staff;
+  const manualStaffIds = task.allocationMode === "manual" ? getTaskStaffIds(task).filter((staffId) => getQualifiedStaffForStage(task.stage, allStaff).some((person) => person.id === staffId)) : [];
   if (manualStaffIds.length) {
     return {
       staffIds: manualStaffIds,
@@ -2521,7 +2574,7 @@ function pickStaffForTaskByCapacity({ job, task, allStaff = [], scheduleStartDat
       allocationMode: "manual",
     };
   }
-  if (!qualified.length) return { staffIds: [], reason: `No eligible staff with ${task.stage} role.`, allocationMode: "auto" };
+  if (!qualified.length) return { staffIds: [], reason: plannerQualified.reason || `No eligible staff with ${task.stage} role.`, allocationMode: "auto" };
 
   const sorted = [...qualified].sort((a, b) => {
     const aFinish = new Date(estimateTaskFinishForStaffIds({ task, staffIds: [a.id], staff: allStaff, minStartDate: minStartDate || scheduleStartDate, usageMap, holidays })).getTime();
@@ -2538,7 +2591,7 @@ function pickStaffForTaskByCapacity({ job, task, allStaff = [], scheduleStartDat
   const chosen = sorted[0];
   return {
     staffIds: [chosen.id],
-    reason: `Auto allocated to ${chosen.name}: earliest capacity, ${task.stage} priority P${getStaffRolePriority(chosen, task.stage)}.`,
+    reason: `${plannerQualified.expanded ? `${plannerQualified.reason} ` : ""}Auto allocated to ${chosen.name}: earliest capacity, ${task.stage} priority P${getStaffRolePriority(chosen, task.stage)}.`,
     allocationMode: "auto",
   };
 }
@@ -2678,7 +2731,7 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
     });
 
   activeJobs.forEach((job) => {
-    let jobCursor = nextPlannerWorkingDay(new Date(job.start || scheduleStartDate));
+    let jobCursor = nextPlannerWorkingDay(new Date(getAutoPlanStartDateForJob(job, scheduleStartDate)));
     const scheduledTasks = [];
     const tasks = ensureAllStageTasks(job.stageTasks || [], job.start || scheduleStartDate, getJobPlanningEnd(job), job.estimatedHours, job.productionStageBreakdown || []);
 
@@ -2695,7 +2748,7 @@ function planJobsWithEngine(jobs = [], staff = [], scheduleStartDate = toIso(new
       const deliveryDate = task.stage === "Delivery" && (task.fixedDate || job.deliveryDate || job.deadline)
         ? nextPlannerWorkingDay(new Date(task.fixedDate || job.deliveryDate || job.deadline))
         : null;
-      const minStartDate = deliveryDate || jobCursor;
+      const minStartDate = deliveryDate || (task.allocationMode === "manual" && task.start ? nextPlannerWorkingDay(new Date(task.start)) : jobCursor);
       const picked = pickStaffForTaskByCapacity({ job, task, allStaff: staff, scheduleStartDate, minStartDate, usageMap: plannerUsage, holidays });
       if (!picked.staffIds.length) {
         const unscheduled = { ...task, staffIds: [], staffId: "", start: "", end: "", allocationMode: picked.allocationMode, planningIssue: picked.reason };
@@ -5141,7 +5194,7 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
 function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onRemoveCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const canEditPricing = activeRole === "operations";
-  const [quoteMeta, setQuoteMeta] = useState({ customerId: "", customerName: "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "" });
+  const [quoteMeta, setQuoteMeta] = useState({ customerId: "", customerName: "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "", deliveryCost: "", deliveryTimeHours: "" });
   const [lineForm, setLineForm] = useState({
     lineProductId: "",
     productId: "ub",
@@ -5203,10 +5256,30 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
   const emptyProductOptionRow = { id: createEntityId("product-option"), size: "", price: "" };
   const [newProductDraft, setNewProductDraft] = useState({ setupMode: "existing", existingProductId: "ub", name: "", category: "Custom Products", unit: "m", defaultGrade: "S275", productionMinutes: "", optionRows: [emptyProductOptionRow] });
 
-  const quoteItems = lines.map((line) => buildSteelQuoteItem(line, pricingSchedule, productDatabase));
+  const baseQuoteItems = lines.map((line) => buildSteelQuoteItem(line, pricingSchedule, productDatabase));
+  const quoteDeliveryCost = Number(quoteMeta.deliveryCost || 0);
+  const quoteDeliveryTimeHours = Number(quoteMeta.deliveryTimeHours || 0);
+  const quoteDeliveryItem = quoteDeliveryCost > 0 ? [{
+    id: "quote-delivery-line",
+    description: "Delivery",
+    quantity: 1,
+    unitPrice: quoteDeliveryCost,
+    productId: "delivery",
+    sectionSize: "Delivery",
+    grade: "",
+    finish: "",
+    length: 0,
+    weightKg: 0,
+    notes: "Delivery cost entered on quote",
+    processDetails: [quoteDeliveryTimeHours > 0 ? `Delivery time ${quoteDeliveryTimeHours} hr(s)` : "Delivery cost"],
+  }] : [];
+  const quoteItems = [...baseQuoteItems, ...quoteDeliveryItem];
   const totals = calculateTotal(quoteItems, 20, "unitPrice");
-  const productionStageBreakdown = mergeProductionStageBreakdowns(lines, productivityRules, productDatabase);
-  const estimatedProductionHours = estimateQuoteProductionHours(lines, productivityRules, productDatabase);
+  const baseProductionStageBreakdown = mergeProductionStageBreakdowns(lines, productivityRules, productDatabase);
+  const productionStageBreakdown = quoteDeliveryTimeHours > 0
+    ? mergeProductionStageBreakdownsFromRows([...baseProductionStageBreakdown, { stage: "Delivery", hours: quoteDeliveryTimeHours, minutes: quoteDeliveryTimeHours * 60 }])
+    : baseProductionStageBreakdown;
+  const estimatedProductionHours = estimateQuoteProductionHours(lines, productivityRules, productDatabase) + quoteDeliveryTimeHours;
   const leadTimePreview = calculatePlannerLeadTime({ jobs, staff, quoteHours: estimatedProductionHours, priority: quoteMeta.priority, requestedDeliveryDate: quoteMeta.requestedDeliveryDate, today: toIso(new Date()) });
   const selectedLineProduct = productDatabase.find((product) => product.id === lineForm.productId);
   const showSteelOnlyOptions = !selectedLineProduct?.isCustom;
@@ -5307,6 +5380,8 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       deliveryAddress: quoteMeta.jobDeliveryAddress || "",
       priority: quoteMeta.priority,
       requestedDeliveryDate: quoteMeta.requestedDeliveryDate,
+      deliveryCost: quoteDeliveryCost,
+      deliveryTimeHours: quoteDeliveryTimeHours,
       estimatedProductionHours,
       productionStageBreakdown,
       leadTime: leadTimePreview,
@@ -5319,7 +5394,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
     setQuotes((current) => editingQuoteId ? current.map((item) => item.id === editingQuoteId ? bumpRecordVersion(item, quote, null) : item) : [withRecordMeta(quote), ...current]);
     setLines([]);
     setEditingQuoteId(null);
-    setQuoteMeta((current) => ({ ...current, customerId: "", customerName: "", title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "" }));
+    setQuoteMeta((current) => ({ ...current, customerId: "", customerName: "", title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "", deliveryCost: "", deliveryTimeHours: "" }));
     setStatus(editingQuoteId ? `${quote.quoteNo} updated and returned to Draft.` : `${quote.quoteNo} raised from steel take-off quote builder.`);
   }
 
@@ -5332,6 +5407,8 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       priority: quote.priority || "3",
       requestedDeliveryDate: quote.requestedDeliveryDate || "",
       jobDeliveryAddress: quote.jobDeliveryAddress || quote.deliveryAddress || "",
+      deliveryCost: quote.deliveryCost || "",
+      deliveryTimeHours: quote.deliveryTimeHours || "",
     });
     setLines((quote.takeoffLines || []).map((line) => ({ ...line })));
     setEditingQuoteId(quote.id);
@@ -5493,6 +5570,8 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
           <Field label="Upload reference file"><input type="file" className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm" onChange={(event) => setQuoteMeta({ ...quoteMeta, uploadedFileName: event.target.files?.[0]?.name || "" })} /></Field>
           <Field label="Priority"><SelectInput value={quoteMeta.priority} onChange={(event) => setQuoteMeta({ ...quoteMeta, priority: event.target.value })}>{quotePriorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</SelectInput></Field>
           <Field label="Requested delivery"><TextInput type="date" value={quoteMeta.requestedDeliveryDate} onChange={(event) => setQuoteMeta({ ...quoteMeta, requestedDeliveryDate: event.target.value })} /></Field>
+          <Field label="Delivery cost"><TextInput type="number" value={quoteMeta.deliveryCost || ""} onChange={(event) => setQuoteMeta({ ...quoteMeta, deliveryCost: event.target.value })} placeholder="£" /></Field>
+          <Field label="Delivery time"><TextInput type="number" step="0.25" value={quoteMeta.deliveryTimeHours || ""} onChange={(event) => setQuoteMeta({ ...quoteMeta, deliveryTimeHours: event.target.value })} placeholder="hrs" /></Field>
           <Field label="Job delivery address"><textarea className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" rows={2} value={quoteMeta.jobDeliveryAddress || ""} onChange={(event) => setQuoteMeta({ ...quoteMeta, jobDeliveryAddress: event.target.value })} placeholder="Optional job-specific delivery address. Leave blank to use customer delivery address." /></Field>
         </div>
         {quoteMeta.uploadedFileName ? <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">Attached: {quoteMeta.uploadedFileName}</p> : null}
@@ -5649,7 +5728,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[950px] border-collapse text-sm">
             <thead><tr className="border-b border-blue-100 text-left text-xs uppercase tracking-wide text-blue-600"><th className="py-3 pr-3">Item</th><th className="py-3 pr-3">Details</th><th className="py-3 pr-3 text-right">Qty</th><th className="py-3 pr-3 text-right">Length</th><th className="py-3 pr-3 text-right">Weight</th><th className="py-3 pr-3 text-right">Total</th><th className="py-3"></th></tr></thead>
-            <tbody>{quoteItems.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={7}>No steel lines added yet.</td></tr> : null}{quoteItems.map((item) => <tr key={item.id} className="border-b border-blue-100 align-top"><td className="py-3 pr-3 font-bold">{item.description}</td><td className="py-3 pr-3 text-xs text-blue-800">{item.processDetails.join(" · ") || "No extras"}</td><td className="py-3 pr-3 text-right">{item.quantity}</td><td className="py-3 pr-3 text-right">{item.length}m</td><td className="py-3 pr-3 text-right">{item.weightKg.toFixed(2)}kg</td><td className="py-3 pr-3 text-right font-bold">{currency(item.quantity * item.unitPrice)}</td><td className="py-3"><div className="flex gap-2"><button className="rounded-lg border bg-white px-3 py-2 text-xs font-bold" onClick={() => editSteelLine(item.id)}>Edit</button><button className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700" onClick={() => removeSteelLine(item.id)}>Remove</button></div></td></tr>)}</tbody>
+            <tbody>{quoteItems.length === 0 ? <tr><td className="py-4 text-blue-600" colSpan={7}>No steel lines added yet.</td></tr> : null}{quoteItems.map((item) => <tr key={item.id} className="border-b border-blue-100 align-top"><td className="py-3 pr-3 font-bold">{item.description}</td><td className="py-3 pr-3 text-xs text-blue-800">{item.processDetails.join(" · ") || "No extras"}</td><td className="py-3 pr-3 text-right">{item.quantity}</td><td className="py-3 pr-3 text-right">{item.length}m</td><td className="py-3 pr-3 text-right">{Number(item.weightKg || 0).toFixed(2)}kg</td><td className="py-3 pr-3 text-right font-bold">{currency(item.quantity * item.unitPrice)}</td><td className="py-3"><div className="flex gap-2"><button className="rounded-lg border bg-white px-3 py-2 text-xs font-bold" onClick={() => editSteelLine(item.id)}>Edit</button><button className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700" onClick={() => removeSteelLine(item.id)}>Remove</button></div></td></tr>)}</tbody>
           </table>
         </div>
         <button disabled={!lines.length} className="mt-4 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-40" onClick={raiseSteelQuote}>{editingQuoteId ? "Save edited quote" : "Raise quote"}</button>
@@ -8058,6 +8137,54 @@ export default function FabricationProductionPlannerIntegrated() {
     if (deliveryNoteToCreate) createDeliveryNote(deliveryNoteToCreate, { silent: true });
   }
 
+
+  function toggleJobPlannerStage(jobId, stage) {
+    const job = jobs.find((item) => item.id === jobId) || scheduledJobs.find((item) => item.id === jobId);
+    if (!job || stage === "Complete") return;
+    const currentTasks = job.stageTasks || [];
+    const existing = currentTasks.find((task) => task.stage === stage);
+    const currentlyRequired = Boolean(existing && !existing.disabled && Number(existing.hours || 0) > 0);
+    let nextTasks;
+    let nextBreakdown;
+
+    if (currentlyRequired) {
+      nextTasks = currentTasks.filter((task) => task.stage !== stage);
+      nextBreakdown = (job.productionStageBreakdown || [])
+        .filter((item) => item.stage !== stage && Number(item.hours || item.minutes || 0) > 0);
+    } else {
+      const hours = Number(existing?.hours || (stage === "Delivery" ? (job.deliveryTimeHours || 1) : getStageHours(job.estimatedHours || 1, stage)) || 1);
+      const task = {
+        ...(existing || {}),
+        id: existing?.id || `stage-task-${Date.now()}-${stage}`,
+        stage,
+        staffIds: existing?.staffIds || [],
+        staffId: existing?.staffId || "",
+        start: existing?.start || job.start || today,
+        end: existing?.end || job.deadline || job.end || today,
+        hours,
+        status: existing?.status || "Not Started",
+        allocationMode: existing?.allocationMode || "auto",
+        timeSource: "manual",
+        disabled: false,
+      };
+      nextTasks = [...currentTasks.filter((item) => item.stage !== stage), task]
+        .sort((a, b) => getStageIndex(a.stage) - getStageIndex(b.stage));
+      const byStage = new Map((job.productionStageBreakdown || []).map((item) => [item.stage, item]));
+      byStage.set(stage, { stage, hours, minutes: hours * 60 });
+      nextBreakdown = Array.from(byStage.values()).filter((item) => Number(item.hours || item.minutes || 0) > 0);
+    }
+
+    const nextEstimatedHours = nextBreakdown.length
+      ? nextBreakdown.reduce((sum, item) => sum + Number(item.hours || 0), 0)
+      : Number(job.estimatedHours || 0);
+
+    updateJob(jobId, {
+      stageTasks: nextTasks,
+      productionStageBreakdown: nextBreakdown,
+      estimatedHours: nextEstimatedHours,
+    });
+  }
+
   function moveJobStage(jobId, direction) {
     const job = jobs.find((item) => item.id === jobId);
     if (!job) return;
@@ -9156,13 +9283,31 @@ export default function FabricationProductionPlannerIntegrated() {
                       <div className="rounded-2xl border border-blue-100 p-4">
                         <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                           <div>
+                            <h3 className="font-bold">Required planner stages</h3>
+                            <p className="text-xs text-blue-600">Switch off stages that are not needed for this job. Only selected stages are allocated to staff.</p>
+                          </div>
+                        </div>
+                        <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                          {stages.filter((stage) => stage !== "Complete").map((stage) => {
+                            const task = (selectedJob.stageTasks || []).find((item) => item.stage === stage);
+                            const required = Boolean(task && !task.disabled && Number(task.hours || 0) > 0);
+                            return (
+                              <label key={`required-${stage}`} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold ${required ? "border-blue-600 bg-blue-50 text-blue-950" : "border-blue-100 bg-white text-blue-500"}`}>
+                                <input type="checkbox" checked={required} onChange={() => toggleJobPlannerStage(selectedJob.id, stage)} />
+                                <span>{stage}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div>
                             <h3 className="font-bold">Stage allocation</h3>
                             <p className="text-xs text-blue-600">Automatic planner decisions are shown first. Use manual override only when a stage needs changing.</p>
                           </div>
                           <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-black uppercase tracking-wide text-blue-700">Live allocation</span>
                         </div>
                         <div className="space-y-3">
-                          {normaliseStageTasksFromCompletion(selectedJob.stageTasks || []).flatMap((task) => {
+                          {normaliseStageTasksFromCompletion((selectedJob.stageTasks || []).filter((task) => !task.disabled && Number(task.hours || 0) > 0)).flatMap((task) => {
                             const deliveryNote = deliveryNotes.find((note) => note.jobId === selectedJob.id && note.status !== "Cancelled");
                             const qualifiedStageStaff = staff.filter((person) => (person.roles || []).includes(task.stage));
                             const assignedStageStaff = getTaskStaffIds(task).map((staffId) => staff.find((person) => person.id === staffId)?.name).filter(Boolean);
@@ -9264,6 +9409,7 @@ export default function FabricationProductionPlannerIntegrated() {
                         <p className="text-sm text-blue-800">Planner finish: {getJobFinishDate(selectedJob) || "Not calculated"}</p>
                         <p className="text-sm text-blue-800">Deadline: {selectedJob.deadline || "Not set"}</p>
                         <p className="text-sm text-blue-800">Materials Due: {selectedJob.materialsDue || "Not set"}</p>
+                        <p className="text-sm text-blue-800">Delivery time: {Number(selectedJob.deliveryTimeHours || 0) ? `${selectedJob.deliveryTimeHours} hr(s)` : "Not set"}</p>
                         <p className="text-sm text-blue-800">Task allocated staff: {selectedJob.staffIds.length ? selectedJob.staffIds.map((id) => staff.find((person) => person.id === id)?.name).filter(Boolean).join(", ") : "No staff allocated"}</p>
                         <p className="text-sm text-blue-800">Available staff pool: {staff.filter((person) => !(selectedJob.excludedStaffIds || []).includes(person.id)).map((person) => person.name).join(", ") || "No staff available"}</p>
                         <p className="text-sm text-blue-800">Hours per assigned person: {selectedJob.staffIds.length ? Math.round(selectedJob.estimatedHours / selectedJob.staffIds.length) : selectedJob.estimatedHours}</p>
