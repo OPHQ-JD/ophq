@@ -781,81 +781,78 @@ function getPartCutLengthM(part = {}) {
   return normaliseLengthM(part.requiredCutLength || part.cutLength || part.lengthM || part.length || part.sizeLength || part.itemLength || "") || Number(part.length || 0) || 0;
 }
 
-function allocateExistingStockRowsForJob(stockItems = [], job = {}) {
-  const parts = getJobPartsList(job, null).filter((part) => part.productId && part.sectionSize && getPartCutLengthM(part) > 0);
-  if (!parts.length) return stockItems;
-  let rows = [...stockItems];
-  parts.forEach((part) => {
-    const quantity = Math.max(1, Number(part.quantity || 1));
-    for (let index = 0; index < quantity; index += 1) {
+function buildStockDemandGroupsForJob(job = {}) {
+  const groups = new Map();
+  getJobPartsList(job, null)
+    .filter((part) => part.productId && part.sectionSize && getPartCutLengthM(part) > 0)
+    .forEach((part) => {
+      const quantity = Math.max(1, Number(part.quantity || 1));
       const cutLengthM = getPartCutLengthM(part);
+      const key = [part.productId, normaliseSectionKey(part.sectionSize), String(part.grade || "").toLowerCase(), String(part.finish || "Self colour").toLowerCase()].join("|");
+      const existing = groups.get(key) || { key, productId: part.productId, sectionSize: part.sectionSize, grade: part.grade, finish: part.finish || "Self colour", templatePart: part, cuts: [] };
+      for (let index = 0; index < quantity; index += 1) existing.cuts.push({ lengthM: cutLengthM, partId: part.id || "", description: part.description || part.partRef || "" });
+      groups.set(key, existing);
+    });
+  return Array.from(groups.values()).map((group) => {
+    const summary = new Map();
+    group.cuts.forEach((cut) => {
+      const key = String(Number(cut.lengthM || 0));
+      summary.set(key, { lengthM: Number(cut.lengthM || 0), quantity: (summary.get(key)?.quantity || 0) + 1 });
+    });
+    return { ...group, totalCutLengthM: group.cuts.reduce((sum, cut) => sum + Number(cut.lengthM || 0), 0), quantity: group.cuts.length, cutSummary: Array.from(summary.values()).sort((a, b) => b.lengthM - a.lengthM) };
+  });
+}
+
+function getCutPlanText(cutSummary = []) {
+  return (cutSummary || []).map((cut) => `${cut.quantity || 1} x ${formatLengthM(cut.lengthM)}`).join(" + ");
+}
+
+function allocateExistingStockRowsForJob(stockItems = [], job = {}) {
+  const demandGroups = buildStockDemandGroupsForJob(job);
+  if (!demandGroups.length) return stockItems;
+  let rows = [...stockItems];
+  demandGroups.forEach((group) => {
+    let remainingCuts = [...group.cuts].sort((a, b) => Number(b.lengthM || 0) - Number(a.lengthM || 0));
+    while (remainingCuts.length) {
+      const groupPartForMatch = { ...group.templatePart, productId: group.productId, sectionSize: group.sectionSize, grade: group.grade, finish: group.finish };
+      const totalRemainingDemand = remainingCuts.reduce((sum, cut) => sum + Number(cut.lengthM || 0), 0);
+      const longestCut = Math.max(...remainingCuts.map((cut) => Number(cut.lengthM || 0)));
       const candidateOptions = rows
         .map((item, rowIndex) => ({ item, rowIndex, availableLengthM: Number(item.length || getRemainingLengthForStockItem(item) || 0) }))
-        .filter(({ item, availableLengthM }) => {
-          if (!stockMatchesPart(item, part)) return false;
-          if (item.allocatedJobId) return false;
-          if (!["In Stock", "Offcut", "Available"].includes(item.status)) return false;
-          return availableLengthM + 0.0001 >= cutLengthM;
-        })
+        .filter(({ item, availableLengthM }) => stockMatchesPart(item, groupPartForMatch) && !item.allocatedJobId && ["In Stock", "Offcut", "Available"].includes(item.status) && availableLengthM + 0.0001 >= longestCut)
         .sort((a, b) => a.availableLengthM - b.availableLengthM);
-      const candidateIndex = candidateOptions[0]?.rowIndex ?? -1;
-      if (candidateIndex < 0) continue;
+      const candidate = candidateOptions.find((option) => option.availableLengthM + 0.0001 >= totalRemainingDemand) || candidateOptions[0];
+      const candidateIndex = candidate?.rowIndex ?? -1;
+      if (candidateIndex < 0) break;
       const source = rows[candidateIndex];
       const sourceLengthM = Number(source.length || getRemainingLengthForStockItem(source) || 0);
       const sourceQuantity = Math.max(1, Number(source.quantity || 1));
-      const remainingCutOffcutM = Math.max(0, sourceLengthM - cutLengthM - stockKerfAllowanceM);
-      const allocatedLine = {
-        ...source,
-        id: createEntityId("stock-allocated"),
-        length: sourceLengthM,
-        sourceStockLengthM: sourceLengthM,
-        allocatedCutLengthM: cutLengthM,
-        remainingLengthM: remainingCutOffcutM,
-        quantity: 1,
-        status: "Allocated",
-        stockLineType: "Allocated",
-        allocatedJobId: job.id || "",
-        allocatedJobNo: job.jobNo || "",
-        sourceStockItemId: source.id,
-        sourcePartId: part.id || "",
-        notes: [`Allocated ${formatLengthM(cutLengthM)} to ${job.jobNo || job.id || "job"} from existing stock length ${formatLengthM(sourceLengthM)}.`, source.notes].filter(Boolean).join(" | "),
-      };
-      const replacementRows = [{
-        ...allocatedLine,
-        lengthSegments: [{
-          id: `${allocatedLine.id}-seg-1`,
-          originalLengthM: sourceLengthM,
-          availableLengthM: remainingCutOffcutM,
-          status: "Allocated",
-          sourceStatus: source.status || "In Stock",
-          allocatedJobId: job.id || "",
-          allocations: [{ id: createEntityId("stock-allocation"), jobId: job.id || "", lengthM: cutLengthM, partId: part.id || "", status: "Allocated", allocatedAt: new Date().toISOString() }],
-        }],
-      }];
+      const cutsForThisSource = [];
+      let usedLengthM = 0;
+      const cutsLeft = [];
+      remainingCuts.forEach((cut) => {
+        const cutLength = Number(cut.lengthM || 0);
+        if (usedLengthM + cutLength + 0.0001 <= sourceLengthM) { cutsForThisSource.push(cut); usedLengthM += cutLength; }
+        else cutsLeft.push(cut);
+      });
+      if (!cutsForThisSource.length) break;
+      remainingCuts = cutsLeft;
+      const summary = new Map();
+      cutsForThisSource.forEach((cut) => {
+        const key = String(Number(cut.lengthM || 0));
+        summary.set(key, { lengthM: Number(cut.lengthM || 0), quantity: (summary.get(key)?.quantity || 0) + 1 });
+      });
+      const cutSummary = Array.from(summary.values()).sort((a, b) => b.lengthM - a.lengthM);
+      const remainingCutOffcutM = Math.max(0, sourceLengthM - usedLengthM - stockKerfAllowanceM);
+      const sourceGroupId = source.sourceGroupId || source.id;
+      const allocatedLine = { ...source, id: createEntityId("stock-allocated"), length: sourceLengthM, sourceStockLengthM: sourceLengthM, allocatedCutLengthM: usedLengthM, remainingLengthM: remainingCutOffcutM, quantity: cutsForThisSource.length, cutPlan: cutSummary, sourceGroupId, status: "Allocated", stockLineType: "Allocated", allocatedJobId: job.id || "", allocatedJobNo: job.jobNo || "", sourceStockItemId: source.id, sourcePartId: group.templatePart.id || "", notes: [`Allocated ${getCutPlanText(cutSummary)} to ${job.jobNo || job.id || "job"} from existing stock length ${formatLengthM(sourceLengthM)}.`, source.notes].filter(Boolean).join(" | ") };
+      const replacementRows = [{ ...allocatedLine, lengthSegments: [{ id: `${allocatedLine.id}-seg-1`, originalLengthM: sourceLengthM, availableLengthM: remainingCutOffcutM, status: "Allocated", sourceStatus: source.status || "In Stock", allocatedJobId: job.id || "", allocations: cutsForThisSource.map((cut) => ({ id: createEntityId("stock-allocation"), jobId: job.id || "", lengthM: Number(cut.lengthM || 0), partId: cut.partId || group.templatePart.id || "", status: "Allocated", allocatedAt: new Date().toISOString(), sourceStockLengthM: sourceLengthM, sourceGroupId })) }] }];
       if (remainingCutOffcutM > 0.0001) {
-        const offcutLine = {
-          ...source,
-          id: createEntityId("stock-offcut"),
-          length: remainingCutOffcutM,
-          quantity: 1,
-          status: "Offcut",
-          stockLineType: "Offcut",
-          allocatedJobId: "",
-          allocatedJobNo: "",
-          sourceStockItemId: source.id,
-          notes: [`Remaining offcut after allocating ${formatLengthM(cutLengthM)} to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | "),
-        };
+        const offcutLine = { ...source, id: createEntityId("stock-offcut"), length: remainingCutOffcutM, quantity: 1, status: "Offcut", stockLineType: "Offcut", allocatedJobId: "", allocatedJobNo: "", sourceStockItemId: source.id, sourceGroupId, notes: [`Remaining offcut after allocating ${getCutPlanText(cutSummary)} to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | ") };
         replacementRows.push({ ...offcutLine, lengthSegments: createStockSegmentsForFixedLine(offcutLine, "Offcut") });
       }
       if (sourceQuantity > 1) {
-        const remainingFullLengthLine = {
-          ...source,
-          id: createEntityId("stock"),
-          quantity: sourceQuantity - 1,
-          allocatedJobId: "",
-          allocatedJobNo: "",
-          notes: [`Remaining ${sourceQuantity - 1} full length(s) after allocating one length to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | "),
-        };
+        const remainingFullLengthLine = { ...source, id: createEntityId("stock"), quantity: sourceQuantity - 1, allocatedJobId: "", allocatedJobNo: "", notes: [`Remaining ${sourceQuantity - 1} full length(s) after allocating one length to ${job.jobNo || job.id || "job"}.`, source.notes].filter(Boolean).join(" | ") };
         replacementRows.push({ ...remainingFullLengthLine, lengthSegments: createLengthSegmentsForStockItem(remainingFullLengthLine) });
       }
       rows = [...rows.slice(0, candidateIndex), ...replacementRows, ...rows.slice(candidateIndex + 1)];
@@ -1998,6 +1995,16 @@ function buildMissingPartsForJob(job, stockItems) {
   return getJobPartsList(job, null)
     .map((part) => ({ part, status: getStockStatusForPart(part, stockItems, job.id) }))
     .filter(({ status }) => status.label === "Missing" || status.label === "On Order");
+}
+
+function getJobMaterialPlanningStatus(job = {}, stockItems = []) {
+  const parts = getJobPartsList(job, null);
+  if (!parts.length) return { label: "Material status unknown", className: "bg-amber-100 text-amber-800", warning: "No material list found - review required." };
+  const statuses = parts.map((part) => getStockStatusForPart(part, stockItems, job.id).label);
+  if (statuses.every((label) => label === "Allocated")) return { label: "Material allocated", className: "bg-emerald-100 text-emerald-800", warning: "" };
+  if (statuses.some((label) => label === "Missing")) return { label: "Awaiting material", className: "bg-red-100 text-red-800", warning: "Material shortfall - review purchasing/stock." };
+  if (statuses.some((label) => label === "On Order")) return { label: "Material on order", className: "bg-amber-100 text-amber-800", warning: "Some material is on order." };
+  return { label: "Material status unknown", className: "bg-amber-100 text-amber-800", warning: "Material status unknown - planner still shows job for review." };
 }
 
 function createPoLineFromPart(part = {}, index = 0, quantity = 1, customProducts = []) {
@@ -6220,15 +6227,35 @@ function printPurchaseOrderPdf({ po, job, supplier, companySettings, onRegisterD
 function buildCuttingListPreviewHtml({ job, stockItems, productDatabase, companySettings }) {
   const safeSettings = companySettings || initialCompanySettings;
   const allocatedItems = (stockItems || []).filter((item) => stockItemLinkedToJob(item, job));
+  const otherJobsBySource = new Map();
+  (stockItems || []).forEach((item) => {
+    const sourceKey = item.sourceGroupId || item.sourceStockItemId || item.cutFromStockItemId || item.id;
+    getStockSegments(item).forEach((segment) => {
+      (segment.allocations || []).forEach((allocation) => {
+        if (!allocation.jobId || allocation.jobId === job?.id) return;
+        const list = otherJobsBySource.get(sourceKey) || new Set();
+        list.add(allocation.jobId);
+        otherJobsBySource.set(sourceKey, list);
+      });
+    });
+    if (item.allocatedJobId && item.allocatedJobId !== job?.id) {
+      const list = otherJobsBySource.get(sourceKey) || new Set();
+      list.add(item.allocatedJobId);
+      otherJobsBySource.set(sourceKey, list);
+    }
+  });
   const rows = allocatedItems.flatMap((item, itemIndex) => {
     const product = productDatabase.find((productItem) => productItem.id === item.productId);
+    const sourceKey = item.sourceGroupId || item.sourceStockItemId || item.cutFromStockItemId || item.id;
+    const relatedJobNos = Array.from(otherJobsBySource.get(sourceKey) || []).map((jobId) => stockItems.find((stock) => stock.allocatedJobId === jobId)?.allocatedJobNo || jobId).filter(Boolean);
+    const sharedSourceNote = relatedJobNos.length ? `<div class="shared">Also required for ${relatedJobNos.join(", ")} - print/cut while stock is on saw.</div>` : "";
     return getStockSegments(item).flatMap((segment) => {
       const allocations = (segment.allocations || []).filter((allocation) => allocation.jobId === job.id);
       if (!allocations.length && item.allocatedJobId === job.id) {
-        allocations.push({ id: `${item.id}-allocation`, jobId: job.id, lengthM: Number(item.allocatedCutLengthM || item.length || 0), partId: item.sourcePartId || "", status: "Allocated" });
+        allocations.push({ id: `${item.id}-allocation`, jobId: job.id, lengthM: Number(item.allocatedCutLengthM || item.length || 0), partId: item.sourcePartId || "", status: "Allocated", sourceStockLengthM: Number(item.sourceStockLengthM || segment.originalLengthM || item.length || 0) });
       }
       return allocations.map((allocation, allocationIndex) => {
-        const sourceLengthM = Number(item.sourceStockLengthM || item.sourceOrderedLengthM || segment.originalLengthM || item.length || 0);
+        const sourceLengthM = Number(allocation.sourceStockLengthM || item.sourceStockLengthM || item.sourceOrderedLengthM || segment.originalLengthM || item.length || 0);
         const cutLengthM = Number(allocation.lengthM || item.allocatedCutLengthM || 0);
         const remainingLengthM = Math.max(0, Number(item.remainingLengthM ?? segment.availableLengthM ?? sourceLengthM - cutLengthM));
         return `
@@ -6240,7 +6267,7 @@ function buildCuttingListPreviewHtml({ job, stockItems, productDatabase, company
             <td class="number strong">${formatLengthM(cutLengthM)}</td>
             <td class="number">${formatLengthM(remainingLengthM)}</td>
             <td>${item.location || ""}</td>
-            <td>${item.notes || ""}</td>
+            <td>${allocationIndex === 0 ? sharedSourceNote : ""}${item.notes || ""}</td>
           </tr>
         `;
       });
@@ -6276,6 +6303,7 @@ function buildCuttingListPreviewHtml({ job, stockItems, productDatabase, company
     .footer { display: grid; grid-template-columns: 1fr 1fr 1fr 2fr; gap: 10px; margin-top: 9px; align-items: end; }
     .sign { border-top: 1px solid #64748b; padding-top: 4px; min-height: 26px; font-size: 9px; }
     .note { color: #1e40af; font-size: 8px; line-height: 1.25; }
+    .shared { margin-bottom: 3px; border: 1px solid #f59e0b; background: #fffbeb; color: #92400e; border-radius: 5px; padding: 3px 4px; font-weight: 900; }
   </style>
 </head>
 <body>
@@ -8907,6 +8935,21 @@ export default function FabricationProductionPlannerIntegrated() {
               {activeRole !== "operations" ? <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-blue-800">Staff can view the planner calendar only. Staff role setup and allocation controls remain operations-only.</div> : null}
             </div>
 
+            {selectedJob ? (
+              <div className="rounded-3xl bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-bold">Job sheet</h3>
+                    <p className="text-sm text-blue-800">Collapsed below planner calendar for quick workshop access.</p>
+                  </div>
+                  <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setJobSheetOpen(!jobSheetOpen)}>{jobSheetOpen ? "Hide job sheet" : "Open job sheet"}</button>
+                </div>
+                {jobSheetOpen ? <div className="mt-4">
+                  <JobSheet job={selectedJob} quote={selectedJobQuote} customer={customers.find((item) => item.id === selectedJob.customerId)} stockItems={stockItems} companySettings={companySettings} onSuggestPO={createSuggestedPoLinesFromMissingParts} onRegisterDocument={registerGeneratedDocument} />
+                </div> : null}
+              </div>
+            ) : null}
+
             <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
               <div className="space-y-6">
               <div className="rounded-3xl bg-white p-5 shadow-sm">
@@ -8944,6 +8987,7 @@ export default function FabricationProductionPlannerIntegrated() {
                   <div className="mt-4 space-y-3">
                     {filteredJobs.map((job) => {
                       const deadlineMissed = isJobPastDeadline(job);
+                      const materialPlanningStatus = getJobMaterialPlanningStatus(job, stockItems);
                       return (
                       <button key={job.id} onClick={() => setSelectedJobId(job.id)} className={`w-full rounded-2xl border p-4 text-left ${deadlineMissed ? "border-red-400 bg-red-50" : getPriorityStyle(job.priority)} ${selectedJob && selectedJob.id === job.id ? "ring-2 ring-blue-600" : ""}`}>
                         <div className="flex items-start justify-between gap-3">
@@ -8955,6 +8999,8 @@ export default function FabricationProductionPlannerIntegrated() {
                           <span className={`rounded-full px-2 py-1 text-xs font-bold ${getStatusStyle(job.status)}`}>{job.status}</span>
                         </div>
                         <div className="mt-3 flex items-center gap-2 text-xs text-blue-600"><span title={getDeadlineLightLabel(job)} className={`inline-block h-3 w-3 rounded-full ${getDeadlineLightStyle(job)}`} /><span>{isStaffLogin ? `Start: ${job.start} · Deadline: ${job.deadline} · Materials Due: ${job.materialsDue}` : `Start: ${job.start} · Planner finish: ${getJobFinishDate(job)} · Deadline: ${job.deadline} · Materials Due: ${job.materialsDue} · ${job.estimatedHours} hrs`}</span></div>
+                        <div className="mt-2 flex flex-wrap gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${materialPlanningStatus.className}`}>{materialPlanningStatus.label}</span></div>
+                        {!isStaffLogin && materialPlanningStatus.warning ? <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800">{materialPlanningStatus.warning}</p> : null}
                         {!isStaffLogin && deadlineMissed ? <p className="mt-2 rounded-lg bg-red-100 px-2 py-1 text-xs font-bold text-red-800">Red light: calculated planner finish is after deadline</p> : null}
                       </button>
                     );})}
