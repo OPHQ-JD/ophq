@@ -3529,6 +3529,15 @@ function DashboardListCard({ title, description, emptyText, children }) {
   );
 }
 
+function getDashboardText(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "object") {
+    return value.company || value.name || value.customer || value.customerName || value.title || value.label || fallback;
+  }
+  return fallback;
+}
+
 function LiveOperatingDashboard({ activeRole, jobs, staff, quotes, plannerQuotePackages, purchaseOrders, stockItems, today, onNavigate }) {
   const activeJobs = safeArray(jobs).filter((job) => !["Complete", "Cancelled"].includes(job.status));
   const todayTasks = getTodayTaskRows(jobs, staff, today);
@@ -3613,13 +3622,13 @@ function LiveOperatingDashboard({ activeRole, jobs, staff, quotes, plannerQuoteP
         <DashboardListCard title={activeRole === "staff" ? "Quick actions" : "Approvals / purchasing"} description={activeRole === "staff" ? "Staff-focused shortcuts." : "Quotes and supplier actions needing attention."} emptyText="No actions due.">
           {activeRole !== "staff" && quoteApprovalRows.length ? quoteApprovalRows.map((quote) => (
             <div key={`quote-${quote.id}`} className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
-              <p className="font-black text-blue-950">{quote.quoteNo || quote.packageNo || quote.title || "Quote"}</p>
-              <p className="mt-1 text-xs font-semibold text-blue-700">{quote.customer || quote.customerName || "Customer"} · {quote.status || "Review"}</p>
+              <p className="font-black text-blue-950">{getDashboardText(quote.quoteNo || quote.packageNo || quote.title, "Quote")}</p>
+              <p className="mt-1 text-xs font-semibold text-blue-700">{getDashboardText(quote.customer || quote.customerName, "Customer")} · {getDashboardText(quote.status, "Review")}</p>
             </div>
           )) : null}
           {activeRole !== "staff" && purchasingActions.length ? purchasingActions.map((po) => (
             <div key={`po-${po.id}`} className="rounded-2xl border border-blue-100 bg-white p-3">
-              <p className="font-black text-blue-950">{po.poNo || po.enquiryNo || "Purchasing"}</p>
+              <p className="font-black text-blue-950">{getDashboardText(po.poNo || po.enquiryNo, "Purchasing")}</p>
               <p className="mt-1 text-xs font-semibold text-blue-700">{po.status} · required {getShortDateLabel(po.requiredBy)}</p>
             </div>
           )) : null}
