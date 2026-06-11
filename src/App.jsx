@@ -1101,7 +1101,7 @@ const appRoles = {
   operations: {
     label: "Operations",
     description: "Full system access",
-    tabs: ["dashboard", "settings", "planner", "planner2", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "settings", "planner", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
   },
   sales: {
     label: "Sales",
@@ -1111,7 +1111,7 @@ const appRoles = {
   staff: {
     label: "Staff",
     description: "Workshop access",
-    tabs: ["dashboard", "planner", "planner2", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "planner", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
   },
 };
 
@@ -7157,6 +7157,7 @@ export default function FabricationProductionPlannerIntegrated() {
   const [expandedPurchasingId, setExpandedPurchasingId] = useState(null);
   const [plannerDiagnosticsOpen, setPlannerDiagnosticsOpen] = useState(false);
   const [jobSheetOpen, setJobSheetOpen] = useState(false);
+  const [originalPlannerOpen, setOriginalPlannerOpen] = useState(false);
   const [expandedJobDetailsId, setExpandedJobDetailsId] = useState(null);
   const [purchasingFormOpen, setPurchasingFormOpen] = useState(false);
   const [selectedSignedDeliveryNoteId, setSelectedSignedDeliveryNoteId] = useState(null);
@@ -8753,14 +8754,14 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
   }
 
   const tabNavigationOrder = activeRole === "operations"
-    ? [["dashboard", "Dashboard"], ["planner", "Planner"], ["planner2", "Planner 2"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
-    : [["dashboard", "Dashboard"], ["settings", "Settings"], ["planner", "Planner"], ["planner2", "Planner 2"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
+    ? [["dashboard", "Dashboard"], ["planner", "Planner"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
+    : [["dashboard", "Dashboard"], ["settings", "Settings"], ["planner", "Planner"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
   const visibleMainTabs = tabNavigationOrder.filter(([key]) => canAccessTab(activeRole, key));
   const visibleStaffTabs = [["clocking", "Clocking In"], ["holiday", "Holiday"]].filter(([key]) => canAccessTab(activeRole, key));
   const pendingHolidayRequests = hasPendingHolidayRequests(holidays);
   const isStaffLogin = activeRole === "staff";
 
-  const dashboardClass = activeTab === "planner" || activeTab === "planner2"
+  const dashboardClass = activeTab === "planner"
     ? "grid gap-4 md:grid-cols-4"
     : activeTab === "jobs" || activeTab === "quotes"
       ? "grid gap-4 md:grid-cols-4"
@@ -8996,9 +8997,9 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Planned hours" value={stats.plannedHours} /> : null}
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Staff" value={stats.staffCount} /> : null}
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Clashes" value={stats.clashes} /> : null}
-            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Quote value" value={currency(stats.quotedValue)} /> : null}
-            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="COGS" value={currency(stats.cogsValue)} /> : null}
-            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Gross" value={currency(stats.grossValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Quote value" value={currency(stats.quotedValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="COGS" value={currency(stats.cogsValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Gross" value={currency(stats.grossValue)} /> : null}
           </div>
         ) : null}
 
@@ -9512,15 +9513,16 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
           </div>
         ) : null}
 
-        {activeTab === "planner2" ? (
+        {activeTab === "planner" ? (
           <div className="space-y-6">
             <div className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <SectionHeader eyebrow="Planner 2" title="Job Timeline Calendar" description="Test view only: jobs run down the left, dates run left-to-right, deadline dates are marked, and staff-coloured task blocks show staff member and task without changing planner allocation." />
+                  <SectionHeader eyebrow="Live Planner" title="Job Timeline Calendar" description="Main planner view: jobs run down the left, dates run left-to-right, deadline dates are marked, and staff-coloured task blocks show staff member and task only." />
                   <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p>
                 </div>
-                <div className="flex flex-wrap gap-2 text-xs font-bold text-blue-800">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-blue-800">
+                  <button type="button" className="rounded-xl border bg-white px-4 py-2 text-sm font-bold text-blue-950" onClick={() => setOriginalPlannerOpen(!originalPlannerOpen)}>{originalPlannerOpen ? "Hide original planner" : "Open original planner"}</button>
                   {staff.filter(isStaffActive).map((person) => <span key={person.id} className={`rounded-full border px-3 py-1 ${getStaffTimelineStyle(person)}`}><span className={`mr-1 inline-block h-2 w-2 rounded-full ${getStaffDotStyle(person)}`} />{person.name}</span>)}
                 </div>
               </div>
@@ -9572,7 +9574,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                   })}
                 </div>
               </div>
-              <p className="mt-3 text-xs font-semibold text-blue-700">Planner 2 is display-only. Use the original Planner tab for auto-plan and manual changes until this view is approved.</p>
+              <p className="mt-3 text-xs font-semibold text-blue-700">Original planner can be opened above for auto-plan, staff calendar and manual planning controls while this job timeline remains the main view.</p>
             </div>
 
             {selectedJob ? (
@@ -9580,7 +9582,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-lg font-bold">Job sheet</h3>
-                    <p className="text-sm text-blue-800">Accessible from Planner 2 job rows for checking drawings, parts and workshop details.</p>
+                    <p className="text-sm text-blue-800">Accessible from planner job rows for checking drawings, parts and workshop details.</p>
                   </div>
                   <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setJobSheetOpen(!jobSheetOpen)}>{jobSheetOpen ? "Hide job sheet" : "Open job sheet"}</button>
                 </div>
@@ -9592,11 +9594,11 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
           </div>
         ) : null}
 
-        {activeTab === "planner" ? (
+        {activeTab === "planner" && originalPlannerOpen ? (
           <div className="space-y-6">
             <div className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div><SectionHeader eyebrow="Live Planner" title="Production Calendar" description="Deadline-led staff allocation. Use Auto-plan to prioritise earliest deadlines and fill staff gaps where work is ready." />
+                <div><SectionHeader eyebrow="Original Planner" title="Original Production Calendar" description="Deadline-led staff allocation. Use Auto-plan to prioritise earliest deadlines and fill staff gaps where work is ready." />
                 <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p></div>
                 {activeRole === "operations" ? <div className="flex flex-wrap gap-2"><button className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white" onClick={() => applyLivePlannerSnapshot(jobs)}>Auto-plan by deadline</button><button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={runPlannerFunctionalTest}>Run function test</button></div> : null}
               </div>
