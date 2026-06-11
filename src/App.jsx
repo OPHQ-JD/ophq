@@ -3545,7 +3545,7 @@ function LiveOperatingDashboard({ activeRole, jobs, staff, quotes, plannerQuoteP
   const staffCapacityRows = getStaffCapacityRows(jobs, staff, today);
   const materialIssues = getMaterialIssueRows(jobs, purchaseOrders, stockItems);
   const quoteApprovalRows = [
-    ...safeArray(plannerQuotePackages).filter((quote) => !["Converted", "Rejected", "Cancelled"].includes(quote.status || "")),
+    ...safeArray(plannerQuotePackages).filter((quote) => !["Converted", "Rejected", "Cancelled", "Job Cancelled"].includes(quote.status || "") && !["Converted", "Rejected", "Cancelled", "Job Cancelled"].includes(quote.inboxStatus || "")),
     ...safeArray(quotes).filter((quote) => ["Accepted", "In Planner Review", "Ready to send"].includes(quote.status || "")),
   ].slice(0, 8);
   const purchasingActions = safeArray(purchaseOrders).filter((po) => !["Received", "Cancelled"].includes(po.status)).slice(0, 8);
@@ -5468,7 +5468,7 @@ function CompanySettingsPanel({ companySettings, setCompanySettings }) {
   );
 }
 
-function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onRemoveCustomProduct, onSendToPlannerInbox, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
+function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedule, setPricingSchedule, pricingSaveMeta, onSavePricing, activeRole = "staff", customProducts, onAddCustomProduct, onRemoveCustomProduct, onSendToPlannerInbox, onQuoteSaved, productivityRules, jobs, staff, companySettings, onRegisterDocument }) {
   const productDatabase = getProductDatabase(customProducts);
   const canEditPricing = activeRole === "operations";
   const [quoteMeta, setQuoteMeta] = useState({ customerId: "", customerName: "", title: "", validUntil: toIso(addDays(new Date(), 30)), uploadedFileName: "", priority: "3", requestedDeliveryDate: "", jobDeliveryAddress: "", deliveryCost: "", deliveryTimeHours: "" });
@@ -5641,9 +5641,10 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       return;
     }
     const customer = customers.find((item) => item.id === quoteMeta.customerId);
+    const previousQuote = editingQuoteId ? quotes.find((quote) => quote.id === editingQuoteId) : null;
     const reservedQuoteNumber = reserveDocumentNumberSync({ documentType: "quote", records: quotes, linkedSourceNumber: "" });
-    const quoteSequence = editingQuoteId ? (quotes.find((quote) => quote.id === editingQuoteId)?.quoteSequence || reservedQuoteNumber.sequence) : reservedQuoteNumber.sequence;
-    const quoteNo = editingQuoteId ? (quotes.find((quote) => quote.id === editingQuoteId)?.quoteNo || reservedQuoteNumber.number) : reservedQuoteNumber.number;
+    const quoteSequence = editingQuoteId ? (previousQuote?.quoteSequence || reservedQuoteNumber.sequence) : reservedQuoteNumber.sequence;
+    const quoteNo = editingQuoteId ? (previousQuote?.quoteNo || reservedQuoteNumber.number) : reservedQuoteNumber.number;
     const quote = {
       id: editingQuoteId || `q-${Date.now()}`,
       quoteSequence,
@@ -5669,6 +5670,7 @@ function SteelTakeoffQuoteBuilder({ customers, quotes, setQuotes, pricingSchedul
       ...totals,
     };
     setQuotes((current) => editingQuoteId ? current.map((item) => item.id === editingQuoteId ? bumpRecordVersion(item, quote, null) : item) : [withRecordMeta(quote), ...current]);
+    if (editingQuoteId && typeof onQuoteSaved === "function") onQuoteSaved(quote, previousQuote);
     setLines([]);
     setEditingQuoteId(null);
     setQuoteMeta((current) => ({ ...current, customerId: "", customerName: "", title: "", uploadedFileName: "", requestedDeliveryDate: "", jobDeliveryAddress: "", deliveryCost: "", deliveryTimeHours: "" }));
@@ -7866,6 +7868,109 @@ export default function FabricationProductionPlannerIntegrated() {
     convertQuotePackageToJob(quotePackage);
   }
 
+  function getOpenPurchasingStatusesForJobCancel() {
+    return ["Enquiry Draft", "Enquiry Sent", "Supplier Quote Received", "Draft PO", "On Order", "Sent", "Part Received"];
+  }
+
+  function closeQuoteApprovalForJob(job, nowIso = new Date().toISOString()) {
+    setPlannerQuotePackages((current) => current.map((pkg) => {
+      const linkedToJob = pkg.convertedJobId === job.id || pkg.quoteId === job.quoteId || pkg.convertedJobNo === job.jobNo;
+      if (!linkedToJob) return pkg;
+      return {
+        ...pkg,
+        status: "Cancelled",
+        inboxStatus: "Job Cancelled",
+        cancelledJobId: job.id,
+        cancelledJobNo: job.jobNo,
+        cancelledJobAt: nowIso,
+      };
+    }));
+  }
+
+  function cancelOpenPurchasingForJob(job, nowIso = new Date().toISOString(), reason = "Job cancelled") {
+    const openStatuses = getOpenPurchasingStatusesForJobCancel();
+    setPurchaseOrders((current) => current.map((po) => {
+      if (po.jobId !== job.id || !openStatuses.includes(po.status)) return po;
+      return {
+        ...po,
+        status: "Cancelled",
+        cancelledAt: nowIso,
+        cancellationReason: reason,
+        notes: [po.notes, `${reason} for ${job.jobNo || "job"}.`].filter(Boolean).join(" | "),
+      };
+    }));
+  }
+
+  function syncEditedQuoteToLinkedJob(updatedQuote, previousQuote = null) {
+    const linkedJob = jobs.find((job) => job.quoteId === updatedQuote.id || (previousQuote?.id && job.quoteId === previousQuote.id));
+    if (!linkedJob) return;
+    const confirmMessage = `${updatedQuote.quoteNo || "This quote"} is linked to ${linkedJob.jobNo || "a job"}.
+
+Update the job details and recalculate stock allocation from the amended quote?`;
+    if (typeof window !== "undefined" && !window.confirm(confirmMessage)) {
+      setAutomationStatus(`${updatedQuote.quoteNo || "Quote"} saved, but linked job stock was not recalculated.`);
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const customer = customers.find((item) => item.id === updatedQuote.customerId);
+    const leadTime = calculatePlannerLeadTime({
+      jobs: jobs.filter((job) => job.id !== linkedJob.id),
+      staff,
+      quoteHours: Number(updatedQuote.estimatedProductionHours || 0),
+      priority: updatedQuote.priority || linkedJob.priority || "3",
+      requestedDeliveryDate: updatedQuote.requestedDeliveryDate || linkedJob.deadline || "",
+      today,
+    });
+    const quotePackage = buildQuotePackage({ quote: { ...updatedQuote, leadTime }, customer, leadTime });
+    const rebuiltJob = createJobFromQuotePackage({ quotePackage, jobCount: jobs.length, today });
+    const preservedStatus = ["Cancelled", "Complete", "To Be Invoiced"].includes(linkedJob.status) ? linkedJob.status : "In Production";
+    const amendedJob = {
+      ...linkedJob,
+      title: rebuiltJob.title || linkedJob.title,
+      customer: rebuiltJob.customer || linkedJob.customer,
+      customerId: rebuiltJob.customerId || linkedJob.customerId,
+      quoteId: updatedQuote.id,
+      quoteNo: updatedQuote.quoteNo,
+      partsList: rebuiltJob.partsList || linkedJob.partsList || [],
+      estimatedHours: rebuiltJob.estimatedHours || linkedJob.estimatedHours || 0,
+      productionStageBreakdown: rebuiltJob.productionStageBreakdown || linkedJob.productionStageBreakdown || [],
+      requiredStages: rebuiltJob.requiredStages || linkedJob.requiredStages || [],
+      stageTasks: rebuiltJob.stageTasks || linkedJob.stageTasks || [],
+      deadline: rebuiltJob.deadline || linkedJob.deadline,
+      materialsDue: rebuiltJob.materialsDue || linkedJob.materialsDue,
+      deliveryAddress: rebuiltJob.deliveryAddress || linkedJob.deliveryAddress || "",
+      deliveryTimeHours: rebuiltJob.deliveryTimeHours || updatedQuote.deliveryTimeHours || linkedJob.deliveryTimeHours || "",
+      deliveryCost: rebuiltJob.deliveryCost || updatedQuote.deliveryCost || linkedJob.deliveryCost || "",
+      status: preservedStatus === "Rework Required" ? "In Production" : preservedStatus,
+      reworkQuoteId: updatedQuote.id,
+      amendedAt: nowIso,
+      notes: `${linkedJob.notes || ""}${linkedJob.notes ? "\n" : ""}Job updated from amended quote ${updatedQuote.quoteNo || ""} on ${today}.`,
+    };
+
+    let missingParts = [];
+    let createdEnquiry = null;
+    setJobs((current) => current.map((job) => job.id === linkedJob.id ? amendedJob : job));
+    setStockItems((currentStock) => {
+      const releasedStock = releaseStockAllocationsForJob(currentStock, linkedJob);
+      const reallocatedStock = allocateExistingStockRowsForJob(releasedStock, amendedJob);
+      missingParts = buildMissingPartsForJob(amendedJob, reallocatedStock);
+      if (missingParts.length) {
+        createdEnquiry = createSuggestedPurchaseOrderDraft({ job: amendedJob, missingParts, supplierId: suppliers[0]?.id || "", poCount: purchaseOrders.length, today });
+      }
+      return reallocatedStock;
+    });
+    cancelOpenPurchasingForJob(linkedJob, nowIso, `Quote ${updatedQuote.quoteNo || "amendment"} superseded material demand`);
+    if (createdEnquiry) {
+      actionService.createRecord({ resource: "purchase_enquiries", record: createdEnquiry, setter: setPurchaseOrders, notes: "Supplier enquiry created after amended quote stock recalculation." });
+    }
+    setPlannerQuotePackages((current) => current.map((pkg) => {
+      const linked = pkg.quoteId === updatedQuote.id || pkg.convertedJobId === linkedJob.id;
+      return linked ? { ...pkg, status: "Converted", inboxStatus: "Converted", convertedJobId: linkedJob.id, convertedJobNo: linkedJob.jobNo, amendedAt: nowIso } : pkg;
+    }));
+    setAutomationStatus(`${linkedJob.jobNo || "Job"} updated from ${updatedQuote.quoteNo || "amended quote"}. Stock allocation recalculated.${createdEnquiry ? ` Supplier enquiry ${createdEnquiry.enquiryNo} created for shortfall.` : " No missing material found."}`);
+  }
+
 
   function createJobReworkQuote(job) {
     const sourceQuote = quotes.find((quote) => quote.id === job.quoteId);
@@ -7898,16 +8003,19 @@ export default function FabricationProductionPlannerIntegrated() {
   }
 
   function cancelJobAndReleaseStock(job) {
-    const confirmMessage = `Remove/cancel ${job.jobNo || "this job"}?\n\nThis will remove it from Job Register and Planner, cancel open delivery notes, and release stock allocated to this job where possible.`;
+    const confirmMessage = `Remove/cancel ${job.jobNo || "this job"}?
+
+This will remove it from Job Register and Planner, close it out of Quote Approvals, cancel open enquiries/PO drafts, cancel open delivery notes, and release stock allocated to this job where possible.`;
     if (typeof window !== "undefined" && !window.confirm(confirmMessage)) return;
     const nowIso = new Date().toISOString();
     setJobs((current) => current.filter((item) => item.id !== job.id));
     setDeliveryNotes((current) => current.map((note) => note.jobId === job.id ? { ...note, status: "Cancelled", cancelledAt: nowIso, cancellationReason: "Job removed/cancelled" } : note));
-    setPlannerQuotePackages((current) => current.map((pkg) => pkg.convertedJobId === job.id ? { ...pkg, inboxStatus: "Job Cancelled", cancelledJobAt: nowIso } : pkg));
-    setQuotes((current) => current.map((quote) => quote.id === job.quoteId ? { ...quote, status: quote.status === "Converted" ? "Job Cancelled" : quote.status, cancelledJobId: job.id, cancelledJobAt: nowIso } : quote));
+    closeQuoteApprovalForJob(job, nowIso);
+    cancelOpenPurchasingForJob(job, nowIso, "Job removed/cancelled");
+    setQuotes((current) => current.map((quote) => quote.id === job.quoteId ? { ...quote, status: "Cancelled", previousStatus: quote.status, cancelledJobId: job.id, cancelledJobAt: nowIso } : quote));
     setStockItems((current) => releaseStockAllocationsForJob(current, job));
     if (selectedJobId === job.id) setSelectedJobId(jobs.find((item) => item.id !== job.id)?.id || "");
-    setAutomationStatus(`${job.jobNo || "Job"} removed from active jobs/planner and linked stock was released where possible.`);
+    setAutomationStatus(`${job.jobNo || "Job"} removed from active jobs/planner, removed from Quote Approvals, open purchasing was cancelled/flagged, and linked stock was released where possible.`);
   }
 
 
@@ -8937,7 +9045,7 @@ export default function FabricationProductionPlannerIntegrated() {
         ) : null}
 
         {activeTab === "plannerQuotes" ? (
-          <PlannerQuotesInbox quotePackages={plannerQuotePackages} onUpdateQuotePackageStatus={updatePlannerQuotePackageStatus} onConvertToJob={convertQuotePackageToJob} automationStatus={automationStatus} />
+          <PlannerQuotesInbox quotePackages={plannerQuotePackages.filter((pkg) => !["Converted", "Rejected", "Cancelled", "Job Cancelled"].includes(pkg.status || "") && !["Converted", "Rejected", "Cancelled", "Job Cancelled"].includes(pkg.inboxStatus || ""))} onUpdateQuotePackageStatus={updatePlannerQuotePackageStatus} onConvertToJob={convertQuotePackageToJob} automationStatus={automationStatus} />
         ) : null}
 
         {activeTab === "customers" ? (
@@ -8986,6 +9094,7 @@ export default function FabricationProductionPlannerIntegrated() {
             onAddCustomProduct={addCustomProduct}
             onRemoveCustomProduct={removeCustomProduct}
             onSendToPlannerInbox={sendQuoteToPlannerInbox}
+            onQuoteSaved={syncEditedQuoteToLinkedJob}
             productivityRules={productivityRules}
             jobs={jobs}
             staff={staff}
