@@ -1101,7 +1101,7 @@ const appRoles = {
   operations: {
     label: "Operations",
     description: "Full system access",
-    tabs: ["dashboard", "settings", "planner", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "settings", "planner", "planner2", "plannerQuotes", "deliveryCalendar", "productivity", "stock", "quotes", "customers", "jobs", "pos", "delivery", "clocking", "holiday"],
   },
   sales: {
     label: "Sales",
@@ -1111,7 +1111,7 @@ const appRoles = {
   staff: {
     label: "Staff",
     description: "Workshop access",
-    tabs: ["dashboard", "planner", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
+    tabs: ["dashboard", "planner", "planner2", "deliveryCalendar", "stock", "delivery", "clocking", "holiday"],
   },
 };
 
@@ -3340,6 +3340,44 @@ function getJobColourStyle(job = {}) {
 function getJobColourDotStyle(job = {}) {
   const styles = ["bg-sky-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-rose-500", "bg-cyan-500", "bg-indigo-500", "bg-lime-500", "bg-fuchsia-500", "bg-orange-500", "bg-teal-500", "bg-slate-500"];
   return styles[getJobColourIndex(job) % styles.length];
+}
+
+function getStaffColourIndex(person = {}) {
+  const raw = String(person.id || person.name || "staff");
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) hash = (hash + raw.charCodeAt(index) * (index + 3)) % 12;
+  return hash;
+}
+
+function getStaffTimelineStyle(person = {}) {
+  const styles = [
+    "border-sky-300 bg-sky-100 text-sky-950",
+    "border-emerald-300 bg-emerald-100 text-emerald-950",
+    "border-violet-300 bg-violet-100 text-violet-950",
+    "border-amber-300 bg-amber-100 text-amber-950",
+    "border-rose-300 bg-rose-100 text-rose-950",
+    "border-cyan-300 bg-cyan-100 text-cyan-950",
+    "border-indigo-300 bg-indigo-100 text-indigo-950",
+    "border-lime-300 bg-lime-100 text-lime-950",
+    "border-fuchsia-300 bg-fuchsia-100 text-fuchsia-950",
+    "border-orange-300 bg-orange-100 text-orange-950",
+    "border-teal-300 bg-teal-100 text-teal-950",
+    "border-slate-300 bg-slate-100 text-slate-950",
+  ];
+  return styles[getStaffColourIndex(person) % styles.length];
+}
+
+function getStaffDotStyle(person = {}) {
+  const styles = ["bg-sky-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-rose-500", "bg-cyan-500", "bg-indigo-500", "bg-lime-500", "bg-fuchsia-500", "bg-orange-500", "bg-teal-500", "bg-slate-500"];
+  return styles[getStaffColourIndex(person) % styles.length];
+}
+
+function getPlannerTimelineTasksForJob(job = {}) {
+  return safeArray(job.stageTasks)
+    .filter((task) => task.status !== "Complete")
+    .filter((task) => taskHasPlannableHours(task))
+    .filter((task) => task.start && task.end)
+    .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")) || String(a.stage || "").localeCompare(String(b.stage || "")));
 }
 
 function getNextVisibleTaskForStaff({ jobs = [], staffId = "", today = toIso(new Date()), holidays = [] }) {
@@ -8696,14 +8734,14 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
   }
 
   const tabNavigationOrder = activeRole === "operations"
-    ? [["dashboard", "Dashboard"], ["planner", "Planner"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
-    : [["dashboard", "Dashboard"], ["settings", "Settings"], ["planner", "Planner"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
+    ? [["dashboard", "Dashboard"], ["planner", "Planner"], ["planner2", "Planner 2"], ["deliveryCalendar", "Delivery Planner"], ["delivery", "Delivery Notes"], ["customers", "CRM"], ["quotes", "Quotes"], ["plannerQuotes", "Quote Approvals"], ["jobs", "Job Register"], ["stock", "Stock Inventory"], ["pos", "Purchasing"], ["productivity", "Time Rules"], ["clocking", "Clocking"], ["holiday", "Holiday"], ["settings", "Settings"]]
+    : [["dashboard", "Dashboard"], ["settings", "Settings"], ["planner", "Planner"], ["planner2", "Planner 2"], ["plannerQuotes", "Quote Approvals"], ["deliveryCalendar", "Delivery Planner"], ["productivity", "Time Rules"], ["stock", "Stock Inventory"], ["quotes", "Quotes"], ["customers", "CRM"], ["jobs", "Job Register"], ["pos", "Purchasing"], ["delivery", "Delivery Notes"], ["clocking", "Clocking"], ["holiday", "Holiday"]];
   const visibleMainTabs = tabNavigationOrder.filter(([key]) => canAccessTab(activeRole, key));
   const visibleStaffTabs = [["clocking", "Clocking In"], ["holiday", "Holiday"]].filter(([key]) => canAccessTab(activeRole, key));
   const pendingHolidayRequests = hasPendingHolidayRequests(holidays);
   const isStaffLogin = activeRole === "staff";
 
-  const dashboardClass = activeTab === "planner"
+  const dashboardClass = activeTab === "planner" || activeTab === "planner2"
     ? "grid gap-4 md:grid-cols-4"
     : activeTab === "jobs" || activeTab === "quotes"
       ? "grid gap-4 md:grid-cols-4"
@@ -8939,9 +8977,9 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Planned hours" value={stats.plannedHours} /> : null}
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Staff" value={stats.staffCount} /> : null}
             {activeTab !== "jobs" && activeTab !== "quotes" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Clashes" value={stats.clashes} /> : null}
-            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Quote value" value={currency(stats.quotedValue)} /> : null}
-            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="COGS" value={currency(stats.cogsValue)} /> : null}
-            {activeTab !== "planner" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Gross" value={currency(stats.grossValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Quote value" value={currency(stats.quotedValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="COGS" value={currency(stats.cogsValue)} /> : null}
+            {activeTab !== "planner" && activeTab !== "planner2" && activeTab !== "pos" && activeTab !== "delivery" && activeTab !== "deliveryCalendar" && activeTab !== "plannerQuotes" ? <StatCard label="Gross" value={currency(stats.grossValue)} /> : null}
           </div>
         ) : null}
 
@@ -9452,6 +9490,86 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                 </>
               );
             })()}
+          </div>
+        ) : null}
+
+        {activeTab === "planner2" ? (
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-5 shadow-sm">
+              <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <SectionHeader eyebrow="Planner 2" title="Job Timeline Calendar" description="Test view only: jobs run down the left, dates run left-to-right, and staff-coloured task blocks show each job from start to finish without changing planner allocation." />
+                  <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs font-bold text-blue-800">
+                  {staff.filter(isStaffActive).map((person) => <span key={person.id} className={`rounded-full border px-3 py-1 ${getStaffTimelineStyle(person)}`}><span className={`mr-1 inline-block h-2 w-2 rounded-full ${getStaffDotStyle(person)}`} />{person.name}</span>)}
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="min-w-[1200px]">
+                  <div className="grid grid-cols-[260px_repeat(10,1fr)] border-b text-xs font-bold text-blue-600">
+                    <div className="sticky left-0 z-10 bg-white p-2">Job / Project</div>
+                    {weekDays.map((day) => <div key={day} className="border-l p-2 text-center">{day.slice(5)}</div>)}
+                  </div>
+                  {filteredJobs.map((job) => {
+                    const timelineTasks = getPlannerTimelineTasksForJob(job);
+                    const jobIsSelected = selectedJob && selectedJob.id === job.id;
+                    return (
+                      <div key={job.id} className={`grid min-h-[96px] grid-cols-[260px_repeat(10,1fr)] border-b ${jobIsSelected ? "ring-2 ring-blue-600" : ""}`}>
+                        <button type="button" onClick={() => { setSelectedJobId(job.id); setJobSheetOpen(true); }} className={`sticky left-0 z-10 border-r p-3 text-left ${getJobColourStyle(job)}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-black">{job.jobNo}</p>
+                              <p className="text-sm font-bold">{job.title || job.customer || "Workshop job"}</p>
+                              <p className="text-xs font-semibold text-blue-800">{job.customer}</p>
+                            </div>
+                            <span className={`mt-1 h-3 w-3 rounded-full ${getDeadlineLightStyle(job)}`} title={getDeadlineLightLabel(job)} />
+                          </div>
+                          <p className="mt-2 text-xs font-bold">Start {getShortDateLabel(job.start)} · Finish {getShortDateLabel(getJobFinishDate(job))}</p>
+                          <p className="mt-1 text-xs font-semibold">Click to open job sheet</p>
+                        </button>
+                        {weekDays.map((day) => {
+                          const tasksForDay = timelineTasks.filter((task) => dateIsWithin(day, task.start, task.end));
+                          return (
+                            <div key={day} className="space-y-1 border-l p-1">
+                              {tasksForDay.length ? tasksForDay.map((task) => {
+                                const assignedStaff = getTaskStaffIds(task).map((staffId) => staff.find((person) => person.id === staffId)).filter(Boolean);
+                                const leadStaff = assignedStaff[0] || {};
+                                return (
+                                  <button key={`${job.id}-${task.id}-${day}`} type="button" onClick={() => { setSelectedJobId(job.id); setJobSheetOpen(true); }} className={`w-full rounded-lg border px-2 py-1 text-left text-[11px] font-bold ${getStaffTimelineStyle(leadStaff)}`}>
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span className="truncate">{task.stage}</span>
+                                      <span>{Number(task.hours || 0).toFixed(1)}h</span>
+                                    </div>
+                                    <p className="truncate font-semibold">{assignedStaff.map((person) => person.name).join(", ") || "Unassigned"}</p>
+                                  </button>
+                                );
+                              }) : <div className="h-full min-h-[68px] rounded-lg bg-slate-50" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="mt-3 text-xs font-semibold text-blue-700">Planner 2 is display-only. Use the original Planner tab for auto-plan, manual changes and staff completion until this view is approved.</p>
+            </div>
+
+            {selectedJob ? (
+              <div className="rounded-3xl bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-bold">Job sheet</h3>
+                    <p className="text-sm text-blue-800">Accessible from Planner 2 job rows for checking drawings, parts and workshop details.</p>
+                  </div>
+                  <button className="rounded-xl border bg-white px-4 py-2 text-sm font-bold" onClick={() => setJobSheetOpen(!jobSheetOpen)}>{jobSheetOpen ? "Hide job sheet" : "Open job sheet"}</button>
+                </div>
+                {jobSheetOpen ? <div className="mt-4">
+                  <JobSheet job={selectedJob} quote={selectedJobQuote} customer={customers.find((item) => item.id === selectedJob.customerId)} stockItems={stockItems} companySettings={companySettings} onSuggestPO={createSuggestedPoLinesFromMissingParts} onRegisterDocument={registerGeneratedDocument} />
+                </div> : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
