@@ -3310,6 +3310,62 @@ function getDeadlineLightLabel(job) {
   return isJobPastDeadline(job) ? "Will miss deadline" : "On schedule";
 }
 
+function getJobColourIndex(job = {}) {
+  const raw = String(job.jobNo || job.id || "");
+  const numeric = raw.match(/(\d+)/);
+  if (numeric) return Math.max(0, Number(numeric[1]) - 1);
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) hash = (hash + raw.charCodeAt(index) * (index + 1)) % 12;
+  return hash;
+}
+
+function getJobColourStyle(job = {}) {
+  const styles = [
+    "border-sky-300 bg-sky-50 text-sky-950",
+    "border-emerald-300 bg-emerald-50 text-emerald-950",
+    "border-violet-300 bg-violet-50 text-violet-950",
+    "border-amber-300 bg-amber-50 text-amber-950",
+    "border-rose-300 bg-rose-50 text-rose-950",
+    "border-cyan-300 bg-cyan-50 text-cyan-950",
+    "border-indigo-300 bg-indigo-50 text-indigo-950",
+    "border-lime-300 bg-lime-50 text-lime-950",
+    "border-fuchsia-300 bg-fuchsia-50 text-fuchsia-950",
+    "border-orange-300 bg-orange-50 text-orange-950",
+    "border-teal-300 bg-teal-50 text-teal-950",
+    "border-slate-300 bg-slate-50 text-slate-950",
+  ];
+  return styles[getJobColourIndex(job) % styles.length];
+}
+
+function getJobColourDotStyle(job = {}) {
+  const styles = ["bg-sky-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-rose-500", "bg-cyan-500", "bg-indigo-500", "bg-lime-500", "bg-fuchsia-500", "bg-orange-500", "bg-teal-500", "bg-slate-500"];
+  return styles[getJobColourIndex(job) % styles.length];
+}
+
+function getNextVisibleTaskForStaff({ jobs = [], staffId = "", today = toIso(new Date()), holidays = [] }) {
+  if (!staffId) return null;
+  const openTasks = (jobs || [])
+    .filter((job) => !["Complete", "Cancelled", "Delivered", "To Be Invoiced"].includes(job.status || ""))
+    .flatMap((job) => (job.stageTasks || []).map((task) => ({ ...task, job })))
+    .filter((item) => item.status !== "Complete")
+    .filter((item) => taskHasPlannableHours(item))
+    .filter((item) => getTaskStaffIds(item).includes(staffId));
+
+  const deliveryTasks = openTasks
+    .filter((item) => String(item.stage || "").toLowerCase() === "delivery")
+    .sort((a, b) => String(a.start || a.job?.deadline || "").localeCompare(String(b.start || b.job?.deadline || "")));
+  if (deliveryTasks.length) return deliveryTasks[0];
+
+  return openTasks
+    .filter((item) => !isStaffOnApprovedHoliday(staffId, item.start || today, holidays))
+    .sort((a, b) => {
+      const dateA = String(a.start || a.job?.start || a.job?.deadline || "9999-12-31");
+      const dateB = String(b.start || b.job?.start || b.job?.deadline || "9999-12-31");
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      return String(a.job?.deadline || "9999-12-31").localeCompare(String(b.job?.deadline || "9999-12-31"));
+    })[0] || null;
+}
+
 function getStatusStyle(status) {
   if (status === "In Production") return "bg-green-100 text-green-800";
   if (status === "Waiting Material") return "bg-yellow-100 text-yellow-800";
@@ -9425,46 +9481,83 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                   </div>
                 </div>
               ) : null}
-              <div className="overflow-x-auto">
-                <div className="min-w-[1100px]">
-                  <div className="grid grid-cols-[180px_repeat(10,1fr)] border-b text-xs font-bold text-blue-600">
-                    <div className="p-2">Staff</div>
-                    {weekDays.map((day) => <div key={day} className="border-l p-2 text-center">{day.slice(5)}</div>)}
-                  </div>
-                  {staff.map((person) => (
-                    <div key={person.id} className="grid min-h-[76px] grid-cols-[180px_repeat(10,1fr)] border-b">
-                      <div className="p-3">
-                        <p className="font-bold">{person.name}</p>
-                        {activeRole === "operations" ? <p className="text-xs text-blue-600">{(person.roles || []).join(", ") || "No roles"}</p> : <p className="text-xs text-blue-600">Planner calendar</p>}
-                      </div>
-                      {weekDays.map((day) => {
-                        const holiday = getHolidayForStaffOnDay(person.id, day, holidays);
-                        const dayStageTasks = getCalendarStageTasksForStaff({ jobs: scheduledJobs, staffId: person.id, day, holidays });
-
-                        return (
-                          <div key={day} className="space-y-1 border-l p-1">
-                            {holiday ? (
-                              <div className="rounded-lg border border-purple-200 bg-purple-50 px-2 py-1 text-[11px] font-bold text-purple-800">
-                                Holiday
-                              </div>
-                            ) : null}
-                            {!holiday && dayStageTasks.map((item) => (
-                              <button key={`${item.job.id}-${item.id}-${day}`} onClick={() => setSelectedJobId(item.job.id)} className={`w-full rounded-lg border px-2 py-1 text-left text-[11px] ${getPriorityStyle(item.job.priority)}`}>
-                                <p className="font-bold">{item.job.jobNo}</p>
-                                <p className="truncate">{item.stage}</p>
-                              </button>
-                            ))}
+              {activeRole === "staff" ? (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {staff.map((person) => {
+                    const nextTask = getNextVisibleTaskForStaff({ jobs: scheduledJobs, staffId: person.id, today, holidays });
+                    const job = nextTask?.job;
+                    return (
+                      <div key={person.id} className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wide text-blue-500">{person.name}</p>
+                            <h3 className="text-lg font-black text-blue-950">Next task</h3>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ))}
+                          {job ? <span className={`mt-1 h-3 w-3 rounded-full ${getDeadlineLightStyle(job)}`} title={getDeadlineLightLabel(job)} /> : null}
+                        </div>
+                        {nextTask && job ? (
+                          <button onClick={() => setSelectedJobId(job.id)} className={`w-full rounded-2xl border p-4 text-left ${getJobColourStyle(job)}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xl font-black">{job.jobNo}</p>
+                                <p className="text-sm font-bold">{job.title || job.customer || "Workshop job"}</p>
+                              </div>
+                              <span className={`h-4 w-4 rounded-full ${getJobColourDotStyle(job)}`} title="Job colour" />
+                            </div>
+                            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                              <p><span className="font-black">Stage:</span> {nextTask.stage}</p>
+                              <p><span className="font-black">Hours:</span> {Number(nextTask.hours || 0).toFixed(2)}</p>
+                              <p><span className="font-black">Start:</span> {getShortDateLabel(nextTask.start || job.start)}</p>
+                              <p><span className="font-black">Deadline:</span> {getShortDateLabel(job.deadline)}</p>
+                            </div>
+                            {String(nextTask.stage || "").toLowerCase() === "delivery" ? <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-xs font-black">Delivery stays visible until marked complete.</p> : null}
+                          </button>
+                        ) : <p className="rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-blue-800">No task currently allocated.</p>}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-              {activeRole !== "operations" ? <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-blue-800">Staff can view the planner calendar only. Staff role setup and allocation controls remain operations-only.</div> : null}
+              ) : (
+                <div className="overflow-x-auto">
+                  <div className="min-w-[1100px]">
+                    <div className="grid grid-cols-[180px_repeat(10,1fr)] border-b text-xs font-bold text-blue-600">
+                      <div className="p-2">Staff</div>
+                      {weekDays.map((day) => <div key={day} className="border-l p-2 text-center">{day.slice(5)}</div>)}
+                    </div>
+                    {staff.map((person) => (
+                      <div key={person.id} className="grid min-h-[76px] grid-cols-[180px_repeat(10,1fr)] border-b">
+                        <div className="p-3">
+                          <p className="font-bold">{person.name}</p>
+                          <p className="text-xs text-blue-600">{(person.roles || []).join(", ") || "No roles"}</p>
+                        </div>
+                        {weekDays.map((day) => {
+                          const holiday = getHolidayForStaffOnDay(person.id, day, holidays);
+                          const dayStageTasks = getCalendarStageTasksForStaff({ jobs: scheduledJobs, staffId: person.id, day, holidays });
+
+                          return (
+                            <div key={day} className="space-y-1 border-l p-1">
+                              {holiday ? (
+                                <div className="rounded-lg border border-purple-200 bg-purple-50 px-2 py-1 text-[11px] font-bold text-purple-800">
+                                  Holiday
+                                </div>
+                              ) : null}
+                              {!holiday && dayStageTasks.map((item) => (
+                                <button key={`${item.job.id}-${item.id}-${day}`} onClick={() => setSelectedJobId(item.job.id)} className={`w-full rounded-lg border px-2 py-1 text-left text-[11px] ${getJobColourStyle(item.job)}`}>
+                                  <div className="flex items-center gap-1"><span className={`h-2 w-2 rounded-full ${getDeadlineLightStyle(item.job)}`} /><p className="font-bold">{item.job.jobNo}</p></div>
+                                  <p className="truncate">{item.stage}</p>
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {selectedJob ? (
+            {activeRole === "operations" && selectedJob ? (
               <div className="rounded-3xl bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -9479,7 +9572,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
               </div>
             ) : null}
 
-            <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+            <div className={activeRole === "staff" ? "hidden" : "grid gap-6 lg:grid-cols-[360px_1fr]"}>
               <div className="space-y-6">
               <div className="rounded-3xl bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
