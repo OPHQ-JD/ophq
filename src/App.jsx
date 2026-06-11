@@ -9496,22 +9496,40 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                           {job ? <span className={`mt-1 h-3 w-3 rounded-full ${getDeadlineLightStyle(job)}`} title={getDeadlineLightLabel(job)} /> : null}
                         </div>
                         {nextTask && job ? (
-                          <button onClick={() => setSelectedJobId(job.id)} className={`w-full rounded-2xl border p-4 text-left ${getJobColourStyle(job)}`}>
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-xl font-black">{job.jobNo}</p>
-                                <p className="text-sm font-bold">{job.title || job.customer || "Workshop job"}</p>
+                          <div className={`w-full rounded-2xl border p-4 text-left ${getJobColourStyle(job)}`}>
+                            <button type="button" onClick={() => setSelectedJobId(job.id)} className="w-full text-left">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-xl font-black">{job.jobNo}</p>
+                                  <p className="text-sm font-bold">{job.title || job.customer || "Workshop job"}</p>
+                                </div>
+                                <span className={`h-4 w-4 rounded-full ${getJobColourDotStyle(job)}`} title="Job colour" />
                               </div>
-                              <span className={`h-4 w-4 rounded-full ${getJobColourDotStyle(job)}`} title="Job colour" />
+                              <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                                <p><span className="font-black">Stage:</span> {nextTask.stage}</p>
+                                <p><span className="font-black">Hours:</span> {Number(nextTask.hours || 0).toFixed(2)}</p>
+                                <p><span className="font-black">Start:</span> {getShortDateLabel(nextTask.start || job.start)}</p>
+                                <p><span className="font-black">Deadline:</span> {getShortDateLabel(job.deadline)}</p>
+                              </div>
+                              {String(nextTask.stage || "").toLowerCase() === "delivery" ? <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-xs font-black">Delivery stays visible until marked complete.</p> : null}
+                            </button>
+                            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                              <button
+                                type="button"
+                                className="rounded-xl border bg-white px-4 py-3 text-sm font-black text-blue-950"
+                                onClick={() => { setSelectedJobId(job.id); setJobSheetOpen(true); }}
+                              >
+                                Open job sheet
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white"
+                                onClick={() => updateStageTask(job.id, nextTask.id, { stage: nextTask.stage, status: "Complete" })}
+                              >
+                                Complete task
+                              </button>
                             </div>
-                            <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-                              <p><span className="font-black">Stage:</span> {nextTask.stage}</p>
-                              <p><span className="font-black">Hours:</span> {Number(nextTask.hours || 0).toFixed(2)}</p>
-                              <p><span className="font-black">Start:</span> {getShortDateLabel(nextTask.start || job.start)}</p>
-                              <p><span className="font-black">Deadline:</span> {getShortDateLabel(job.deadline)}</p>
-                            </div>
-                            {String(nextTask.stage || "").toLowerCase() === "delivery" ? <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-xs font-black">Delivery stays visible until marked complete.</p> : null}
-                          </button>
+                          </div>
                         ) : <p className="rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-blue-800">No task currently allocated.</p>}
                       </div>
                     );
@@ -9557,7 +9575,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
               )}
             </div>
 
-            {activeRole === "operations" && selectedJob ? (
+            {selectedJob ? (
               <div className="rounded-3xl bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -9611,7 +9629,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                       const deadlineMissed = isJobPastDeadline(job);
                       const materialPlanningStatus = getJobMaterialPlanningStatus(job, stockItems);
                       return (
-                      <button key={job.id} onClick={() => setSelectedJobId(job.id)} className={`w-full rounded-2xl border p-4 text-left ${deadlineMissed ? "border-red-400 bg-red-50" : getPriorityStyle(job.priority)} ${selectedJob && selectedJob.id === job.id ? "ring-2 ring-blue-600" : ""}`}>
+                      <button key={job.id} onClick={() => setSelectedJobId(job.id)} className={`w-full rounded-2xl border p-4 text-left ${getJobColourStyle(job)} ${deadlineMissed ? "ring-2 ring-red-400" : ""} ${selectedJob && selectedJob.id === job.id ? "ring-2 ring-blue-600" : ""}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <p className="font-bold">{job.jobNo}</p>
