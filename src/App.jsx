@@ -3380,6 +3380,16 @@ function getPlannerTimelineTasksForJob(job = {}) {
     .sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")) || String(a.stage || "").localeCompare(String(b.stage || "")));
 }
 
+function getJobDeadlineDate(job = {}) {
+  return job.deadline || job.deliveryDate || job.calculatedEnd || job.end || "";
+}
+
+function getDailyPlannedPriorityLabel(job = {}, task = {}, assignedStaff = []) {
+  const jobPriority = job.priority || "3";
+  const rolePriority = assignedStaff.length ? Math.min(...assignedStaff.map((person) => getStaffRolePriority(person, task.stage))) : null;
+  return rolePriority && Number.isFinite(rolePriority) ? `Job P${jobPriority} · Role P${rolePriority}` : `Job P${jobPriority}`;
+}
+
 function getNextVisibleTaskForStaff({ jobs = [], staffId = "", today = toIso(new Date()), holidays = [] }) {
   if (!staffId) return null;
   const openTasks = (jobs || [])
@@ -9498,7 +9508,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
             <div className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <SectionHeader eyebrow="Planner 2" title="Job Timeline Calendar" description="Test view only: jobs run down the left, dates run left-to-right, and staff-coloured task blocks show each job from start to finish without changing planner allocation." />
+                  <SectionHeader eyebrow="Planner 2" title="Job Timeline Calendar" description="Test view only: jobs run down the left, dates run left-to-right, deadline dates are marked, and staff-coloured task blocks show daily planned priority without changing planner allocation." />
                   <p className="text-sm text-blue-600">{weekDays[0]} to {weekDays[weekDays.length - 1]}</p>
                 </div>
                 <div className="flex flex-wrap gap-2 text-xs font-bold text-blue-800">
@@ -9526,12 +9536,15 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                             <span className={`mt-1 h-3 w-3 rounded-full ${getDeadlineLightStyle(job)}`} title={getDeadlineLightLabel(job)} />
                           </div>
                           <p className="mt-2 text-xs font-bold">Start {getShortDateLabel(job.start)} · Finish {getShortDateLabel(getJobFinishDate(job))}</p>
+                          <p className="mt-1 text-xs font-black text-rose-700">Deadline {getShortDateLabel(getJobDeadlineDate(job))}</p>
                           <p className="mt-1 text-xs font-semibold">Click to open job sheet</p>
                         </button>
                         {weekDays.map((day) => {
                           const tasksForDay = timelineTasks.filter((task) => dateIsWithin(day, task.start, task.end));
+                          const isDeadlineDay = getJobDeadlineDate(job) === day;
                           return (
-                            <div key={day} className="space-y-1 border-l p-1">
+                            <div key={day} className={`space-y-1 border-l p-1 ${isDeadlineDay ? "bg-rose-50" : ""}`}>
+                              {isDeadlineDay ? <button type="button" onClick={() => { setSelectedJobId(job.id); setJobSheetOpen(true); }} className="mb-1 w-full rounded-lg border border-rose-300 bg-white px-2 py-1 text-left text-[10px] font-black text-rose-800">Deadline / delivery date</button> : null}
                               {tasksForDay.length ? tasksForDay.map((task) => {
                                 const assignedStaff = getTaskStaffIds(task).map((staffId) => staff.find((person) => person.id === staffId)).filter(Boolean);
                                 const leadStaff = assignedStaff[0] || {};
@@ -9539,7 +9552,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                                   <button key={`${job.id}-${task.id}-${day}`} type="button" onClick={() => { setSelectedJobId(job.id); setJobSheetOpen(true); }} className={`w-full rounded-lg border px-2 py-1 text-left text-[11px] font-bold ${getStaffTimelineStyle(leadStaff)}`}>
                                     <div className="flex items-center justify-between gap-1">
                                       <span className="truncate">{task.stage}</span>
-                                      <span>{Number(task.hours || 0).toFixed(1)}h</span>
+                                      <span className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px]">{getDailyPlannedPriorityLabel(job, task, assignedStaff)}</span>
                                     </div>
                                     <p className="truncate font-semibold">{assignedStaff.map((person) => person.name).join(", ") || "Unassigned"}</p>
                                   </button>
