@@ -9574,7 +9574,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
                   })}
                 </div>
               </div>
-              <p className="mt-3 text-xs font-semibold text-blue-700">Original planner can be opened above for auto-plan, staff calendar and manual planning controls while this job timeline remains the main view.</p>
+              <p className="mt-3 text-xs font-semibold text-blue-700">Original planner can be opened above for auto-plan, staff calendar and manual planning controls while this job timeline remains the main view. Staff users see the single-task planner automatically.</p>
             </div>
 
             {selectedJob ? (
@@ -9594,7 +9594,7 @@ This will remove it from Job Register and Planner, close it out of Quote Approva
           </div>
         ) : null}
 
-        {activeTab === "planner" && originalPlannerOpen ? (
+        {activeTab === "planner" && (originalPlannerOpen || activeRole === "staff") ? (
           <div className="space-y-6">
             <div className="rounded-3xl bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
